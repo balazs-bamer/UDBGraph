@@ -1,0 +1,27 @@
+/** @file
+Class for CMake and command line configuration. Also see README.md for more details.
+
+COPYRIGHT COMES HERE
+*/
+
+#ifndef UDBGRAPH_CONFIG
+#define UDBGRAPH_CONFIG
+
+#include <getopt.h>
+#include <cctype>
+
+// configured settings
+#define UDBGRAPH_VERSION_MAJOR @STILL_VERSION_MAJOR@
+#define UDBGRAPH_VERSION_MINOR @STILL_VERSION_MINOR@
+
+#ifndef NDEBUG
+#define DEBUG 1
+#endif
+
+#define ON 1
+#define OFF 0
+
+// these are compile-type settings
+#define USE_NVWA @USE_NVWA@
+
+#endif

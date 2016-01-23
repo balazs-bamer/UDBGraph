@@ -1,0 +1,23 @@
+/** @file
+Class for CMake and command line configuration. Also see README.md for more details.
+
+COPYRIGHT COMES HERE
+*/
+
+#ifndef DEBUG_CONFIG
+#define DEBUG_CONFIG
+
+#include <getopt.h>
+#include <cctype>
+
+#define ON 1
+#define OFF 0
+
+// these are compile-type settings
+#define USE_NVWA @USE_NVWA@
+#define DEBUG_OUTPUT @DEBUG_OUTPUT@
+#define DEBUG_STDOUT @DEBUG_STDOUT@
+#define DEBUG_LOC "@DEBUG_LOC@"
+#define OUTPUT_FILE_PREFIX "@OUTPUT_FILE_PREFIX@"
+
+#endif

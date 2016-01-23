@@ -1,0 +1,2 @@
+-database creation and open parameters should be adjustable and presetrtable in cmake
+-nvwa/debug_new.cpp: builtin_trap is not enough, there must be something Windows or Mac compatible solution as well.
