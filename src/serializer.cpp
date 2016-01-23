@@ -108,7 +108,7 @@ void FixedFieldIO::checkPosition(uint32_t fieldStart, int recordType) {
 
 size_t RecordChain::Record::size = 0;
 
-const uint32_t RecordChain::Record::recordVarStarts[RT_NOMORE];
+constexpr uint32_t RecordChain::Record::recordVarStarts[RT_NOMORE];
 
 void RecordChain::Record::setSize(size_t s) {
     if(size == 0) {

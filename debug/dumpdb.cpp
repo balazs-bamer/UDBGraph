@@ -142,7 +142,7 @@ protected:
 
 size_t Dump::Record::size = 0;
 
-char const Dump::Record::recordTypeNames[6][6];
+char constexpr Dump::Record::recordTypeNames[6][6];
 
 void Dump::Record::print() const {
 	cout << "@:" << key << ' ';

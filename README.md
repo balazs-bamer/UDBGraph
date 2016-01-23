@@ -31,6 +31,8 @@ Currently I use clang 3.4.2 and cmake 3.4.1 for development with flags
 
 Later, when the library is mature enough, I will test it with g++ and Microsoft compilers.
 
+To utilize nested cmake operation, please first start it and make in src (to compile the library) then in the main directory (compiles the debug programs and dumpdb). Later on, make from the main directory makes everything.
+
 
 ## Design
 
