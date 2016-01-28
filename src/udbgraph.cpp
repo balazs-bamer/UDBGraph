@@ -16,16 +16,16 @@ namespace udbgraph {
 
     string toString(GEState s) {
         switch(s) {
-        case GEState::NND:
-            return string("NND");
+        case GEState::DU:
+            return string("DU");
+        case GEState::DK:
+            return string("DK");
         case GEState::NN:
             return string("NN");
         case GEState::NC:
             return string("NC");
         case GEState::CC:
             return string("CC");
-        case GEState::CCA:
-            return string("CCA");
         case GEState::CN:
             return string("CN");
         case GEState::PN:
@@ -33,7 +33,7 @@ namespace udbgraph {
         case GEState::PP:
             return string("PP");
         }
-        throw logic_error("Impossible.");
+        throw DebugException("Impossible.");
     }
 }
 
@@ -175,7 +175,7 @@ void Database::write(keyType key) {
     isReady();
     auto foundElem = allLockedElems.find(key);
     if(foundElem == allLockedElems.end()) {
-        throw ExistenceException("Elem not registered in database, use db.write().");
+        throw ExistenceException("Elem not registered in Database, use db.write().");
     }
     Transaction tr = doBeginTrans(false);
     doWrite(foundElem->second, tr);
@@ -187,7 +187,7 @@ void Database::write(keyType key, Transaction &tr) {
     isReady();
     auto foundElem = allLockedElems.find(key);
     if(foundElem == allLockedElems.end()) {
-        throw ExistenceException("Elem not registered in database, use db.write().");
+        throw ExistenceException("Elem not registered in Database, use db.write().");
     }
     doWrite(foundElem->second, tr);
 }
@@ -263,30 +263,28 @@ inline transLockedElemsMapType::iterator Database::getCheckTransLocked(transHand
     return foundLockedElems;
 }
 
-void Database::checkAlienBeforeWrite(keyType key, Transaction &tr) const {
-    bool keyInAll = allLockedElems.find(key) != allLockedElems.end();
-    checkAlienBeforeWrite(key, tr, keyInAll);
-}
-
-void Database::checkAlienBeforeWrite(keyType key, Transaction &tr, bool keyInAll) const {
-    if(keyInAll) {
-        size_t countRO = roTransCounter.count(key);
-        if(tr.isReadonly()) {
-            if(countRO == 0) {
-                throw TransactionException("Attempting a read-only transaction on an elem already present in a read-write one.");
-            }
-        }
-        else {
-            if(countRO > 0) {
-                throw TransactionException("Attempting a read-write transaction on an elem already present in a read-only one.");
-            }
-            auto foundLockedElems = transLockedElems.find(tr.getHandle());
-            if(foundLockedElems->second.find(key) == foundLockedElems->second.end()) {
-                throw TransactionException("Attempting to involve an elem in a read-write transaction while already present in an other read-write one.");
-            }
+void Database::checkKeyVsTrans(keyType key, Transaction &tr) const {
+    size_t countRO = roTransCounter.count(key);
+    if(tr.isReadonly()) {
+        if(countRO == 0) {
+            throw TransactionException("Attempting a read-only transaction on an elem already present in a read-write one.");
         }
     }
-    // otherwise detached elem, no problem
+    else {
+        if(countRO > 0) {
+            throw TransactionException("Attempting a read-write transaction on an elem already present in a read-only one.");
+        }
+        auto foundLockedElems = transLockedElems.find(tr.getHandle());
+        if(foundLockedElems->second.find(key) == foundLockedElems->second.end()) {
+            throw TransactionException("Attempting to involve an elem in a read-write transaction while already present in an other read-write one.");
+        }
+    }
+}
+
+void Database::checkAlienBeforeWrite(keyType key, Transaction &tr) const {
+    if(allLockedElems.find(key) != allLockedElems.end()) {
+        checkKeyVsTrans(key, tr);
+    }
 }
 
 void Database::checkAlienBeforeWrite(deque<keyType> &toCheck, Transaction &tr) const {
@@ -335,14 +333,14 @@ void Database::doWrite(shared_ptr<GraphElem> &ge, Transaction &tr) {
     if(tr.isReadonly()) {
         throw TransactionException("Trying to write during a read-only transaction.");
     }
-    if(ge->getState() == GEState::CN) {
+    GEState state = ge->getState();
+    if(state == GEState::CN || state == GEState::NN) {
         throw ExistenceException("Trying to write an already deleted element.");
     }
     keyType key = ge->getKey();
-    GEState state = ge->getState();
     if(key == KEY_INVALID) {
-        if(state != GEState::NND) {
-            throw logic_error(string("doWrite: illegal state with KEY_INVALID: ") + toString(state));
+        if(state != GEState::DU) {
+            throw DebugException(string("doWrite: illegal state with KEY_INVALID: ") + toString(state));
         }
         ge->key = key = keyGen->nextKey();
     }
@@ -353,6 +351,9 @@ void Database::doWrite(shared_ptr<GraphElem> &ge, Transaction &tr) {
     ups_txn_t *upsTr = foundUpsTrans->second;
     auto foundElem = allLockedElems.find(key);
     if(foundElem == allLockedElems.end()) {
+        if(state == GEState::DK) {
+            ge->read(upsTr, RCState::FULL);
+        }
         deque<keyType> toCheck = ge->getConnectedElemsBeforeWrite();
         // check if any of them belong to an other transaction
         checkAlienBeforeWrite(toCheck, tr);
@@ -362,32 +363,12 @@ void Database::doWrite(shared_ptr<GraphElem> &ge, Transaction &tr) {
         checkACLandRegister(toCheck, foundLockedElems, tr);
         registerElem(ge, foundLockedElems, tr);
         // writing brand new element or a detached existing one
-        // current state NND, CCA
-        switch(state) {
-        case GEState::NND:
-            ge->insert(upsTr);
-            break;
-        case GEState::CCA:
-            ge->update(upsTr);
-            break;
-        default:
-            throw logic_error(string("doWrite detached: illegal state") + toString(state));
-        }
     }
     else {
         // we already know that key is in allLockedElems
-        checkAlienBeforeWrite(key, tr, true);
-        // writing an elem in the registry, current state NC, CC, NN
-        switch(state) {
-        case GEState::NN:
-        case GEState::NC:
-        case GEState::CC:
-            ge->update(upsTr);
-            break;
-        default:
-            throw logic_error(string("doWrite attached: illegal state") + toString(state));
-        }
+        checkKeyVsTrans(key, tr);
     }
+    ge->write(upsTr);
 }
 
 keyType Database::getFirstFreeKey() {
@@ -429,8 +410,16 @@ GraphElem::GraphElem(shared_ptr<Database> d, RecordType rt, unique_ptr<Payload> 
 }
 
 Payload& GraphElem::pl() {
-    // TODO check if partial, load fully
-    // TODO check and deserialize if needed
+    switch(state) {
+    case GEState::CN:
+    case GEState::NN:
+        throw IllegalMethodException("Callot get payload on deleted element.");
+    case GEState::PN:
+    case GEState::PP:
+        throw DebugException("Cannot get payload on P*.");
+    default:
+        break;
+    }
     return *payload;
 }
 
@@ -448,78 +437,45 @@ void GraphElem::serialize(ups_txn_t *tr) {
     chainNew.write(oldKeys, key, tr);
 }
 
-void GraphElem::insert(ups_txn_t *tr) {
-    serialize(tr);
-    switch(state) {
-    case GEState::NND:
-        state = GEState::NC;
-        break;
-    case GEState::CCA:
+void GraphElem::read(ups_txn_t *tr, RCState level) {
+    chainOrig.read(key, tr, level);
+    chainNew.clone(chainOrig);
+    if(level == RCState::FULL) {
         state = GEState::CC;
-        break;
-    default:
-        throw logic_error(string("doWrite detached: illegal state") + toString(state));
+        payload->deserialize(converter);
+    }
+    else {
+        state = GEState::PP;
     }
 }
 
-void GraphElem::update(ups_txn_t *tr) {
+void GraphElem::write(ups_txn_t *tr) {
     serialize(tr);
-    switch(state) {
-    case GEState::NN:
+    if(state == GEState::DU) {
         state = GEState::NC;
-        break;
-    default:	// against warning
-        break;
     }
 }
 
 void GraphElem::endTrans(TransactionEnd te) {
-    if(te == TransactionEnd::ABORT) {
-        switch(state) {
-        case GEState::NC:
-        case GEState::PN:
-        case GEState::PP:
-            chainOrig.clear();
-            chainNew.clear();
-            state = GEState::NND;
-            break;
-        case GEState::CC:
-            chainNew.clone(chainOrig);
-            // reset the old content in Payload
-            payload->deserialize(converter);
-        case GEState::CN:
-            state = GEState::CCA;
-            break;
-        default:
-            throw logic_error(string("endTrans abort: illegal state") + toString(state));
-            break;
-        }
-    }
-    else {
-        switch(state) {
-        case GEState::CN:
-        case GEState::PN:
-        case GEState::PP:
-            chainOrig.clear();
-            chainNew.clear();
-            state = GEState::NND;
-            break;
-        case GEState::NC:
-        case GEState::CC:
-            if(db.lock()->isMultithreaded()) {
-                chainOrig.clear();
-                chainNew.clear();
-                state = GEState::NND;
-            }
-            else {
-                chainOrig.clone(chainNew);
-                state = GEState::CCA;
-            }
-            break;
-        default:
-            throw logic_error(string("endTrans commit: illegal state") + toString(state));
-            break;
-        }
+//    if(te == TransactionEnd::ABORT) {
+        // TODO if state was CC perhaps reset the old content in Payload
+  //  }
+    chainOrig.clear();
+    chainNew.clear();
+    switch(state) {
+    case GEState::CN:
+    case GEState::PN:
+    case GEState::NN:
+        state = GEState::DU;
+        break;
+    case GEState::NC:
+    case GEState::CC:
+    case GEState::PP:
+        state = GEState::DK;
+        break;
+    default:
+        throw DebugException(string("endTrans commit: illegal state") + toString(state));
+        break;
     }
 }
 
@@ -561,7 +517,7 @@ void Edge::setEnds(shared_ptr<GraphElem> &start, shared_ptr<GraphElem> &end) {
 
 deque<keyType> Edge::getConnectedElemsBeforeWrite() {
     deque<keyType> result;
-    if(state == GEState::NND) {
+    if(state == GEState::DU) {
         //inserting new edge, we need to register it at its ends
         result.push_back(chainNew.getHeadField(FPE_NODE_START));
         result.push_back(chainNew.getHeadField(FPE_NODE_END));
@@ -569,9 +525,12 @@ deque<keyType> Edge::getConnectedElemsBeforeWrite() {
     return result;
 }
 
-void Edge::insert(ups_txn_t *tr) {
-    GraphElem::insert(tr);
-    // TODO update ends
+void Edge::write(ups_txn_t *tr) {
+    bool needUpdateEnds = state == GEState::DU;
+    GraphElem::write(tr);
+    if(needUpdateEnds) {
+        // TODO update ends
+    }
 }
 
 unordered_map<payloadType, GEFactory::CreatorFunction> GEFactory::registry;
@@ -600,7 +559,7 @@ shared_ptr<GraphElem> GEFactory::create(shared_ptr<Database> db, payloadType typ
             return it->second(db, typeKey);
         }
     }
-    throw logic_error(string("Unknown graph elem type: ") + to_string(typeKey));
+    throw DebugException(string("Unknown graph elem type: ") + to_string(typeKey));
 }
 
 InitStatic::InitStatic() {

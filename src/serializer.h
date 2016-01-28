@@ -10,7 +10,6 @@ COPYRIGHT COMES HERE
 #include<list>
 #include<deque>
 #include<cstdint>
-#include<stdexcept>
 #include<algorithm>
 #include<ups/upscaledb.h>
 #if USE_NVWA == 1
@@ -54,39 +53,36 @@ namespace udbgraph {
         FP_ACL,
         FP_NEXT = FP_ACL + sizeof(keyType),
         FP_PAYLOADTYPE = FP_NEXT + sizeof(keyType),	// 12
+        FP_VAR = FP_PAYLOADTYPE + sizeof(payloadType)
     };
 
-    /** Root fixed field positions in byte.*/
-    enum FieldPosRoot {
-        FPR_VER_MAJOR = FP_PAYLOADTYPE + sizeof(payloadType),
-        FPR_VER_MINOR = FPR_VER_MAJOR + sizeof(countType),
-        FPR_APP_NAME = FPR_VER_MINOR + sizeof(countType),
-        FPR_CNT_INEDGE = FPR_APP_NAME + APP_NAME_LENGTH,
-        FPR_CNT_OUTEDGE = FPR_CNT_INEDGE + sizeof(countType),
-        FPR_CNT_UNEDGE = FPR_CNT_OUTEDGE + sizeof(countType),
-        FPR_CNT_FREDGE = FPR_CNT_UNEDGE + sizeof(countType),
-        FPR_VAR = FPR_CNT_FREDGE + sizeof(countType)	// 32
-    };
-
-    /** Node fixed field positions in byte.*/
+    /** Node fixed field positions in byte, part of root. */
     enum FieldPosNode {
-        FPN_CNT_INEDGE = FP_PAYLOADTYPE + sizeof(payloadType),
+        FPN_CNT_INEDGE = FP_VAR,
         FPN_CNT_OUTEDGE = FPN_CNT_INEDGE + sizeof(countType),
         FPN_CNT_UNEDGE = FPN_CNT_OUTEDGE + sizeof(countType),
         FPN_CNT_FREDGE = FPN_CNT_UNEDGE + sizeof(countType),
         FPN_VAR = FPN_CNT_FREDGE + sizeof(countType)	// 32
     };
 
+    /** Root fixed field positions in byte.*/
+    enum FieldPosRoot {
+        FPR_VER_MAJOR = FPN_VAR,
+        FPR_VER_MINOR = FPR_VER_MAJOR + sizeof(countType),
+        FPR_APP_NAME = FPR_VER_MINOR + sizeof(countType),
+        FPR_VAR = FPR_APP_NAME + APP_NAME_LENGTH
+    };
+
     /** Edge (directed and undirected) fixed field positions in byte. */
     enum FieldPosEdge {
-        FPE_NODE_START = FP_PAYLOADTYPE + sizeof(payloadType),
+        FPE_NODE_START = FP_VAR,
         FPE_NODE_END = FPE_NODE_START + sizeof(keyType),
         FPE_VAR = FPE_NODE_END + sizeof(keyType)	// 32
     };
 
     /** Access control list fixed field positions in byte. */
     enum FieldPosACL {
-        FPA_VAR = FP_PAYLOADTYPE + sizeof(payloadType)
+        FPA_VAR = FP_VAR
         /* more fields come here */
     };
 
@@ -112,13 +108,17 @@ namespace udbgraph {
         ACL_FREE, ACL_DB_PRIV, ACL_NOMORE
     };
 
-    /** States for RecordChain. */
+    /** States for RecordChain. State represents what is actually read: if the
+    chain consists of only the head it will be HEAD etc. */
     enum class RCState {
         /** No content. */
         EMPTY,
 
-        /** Content read partially, including the first record holding serialized
-         * fields after the edge keys. */
+        /** Only the head is read. */
+        HEAD,
+
+        /** Content read partially, including the first record holding the beginning
+         * of payload. */
         PARTIAL,
 
         /** Full content read. */
@@ -182,9 +182,6 @@ namespace udbgraph {
             /** UpscaleDB record size. */
             static size_t size;
 
-            /** Array to index with RecordType to get the starting record indices. */
-            static constexpr uint32_t recordVarStarts[] = {FPR_VAR, FPA_VAR, FPN_VAR, FPE_VAR, FPE_VAR, FPC_VAR};
-
             /** Pointer to the content. */
             uint8_t * record;
 
@@ -201,19 +198,29 @@ namespace udbgraph {
             ups_record_t upsRecord;
 
         public:
-            /** Sets the static field size. */
+            /** Array to index with RecordType to get the starting record indices. */
+            static constexpr uint32_t recordVarStarts[] = {FPR_VAR, FPA_VAR, FPN_VAR, FPE_VAR, FPE_VAR, FPC_VAR};
+
+            /** Gets the static record size. */
+            static size_t getSize() { return size; }
+
+            /** Sets the static record size. */
             static void setSize(size_t s);
 
             /** Checks the record size to make sure it was set. */
             static void checkSize();
 
             /** Constructs a new record in memory with predefined
+             * UpscaleDB record size. Used right before reading. */
+            Record();
+
+            /** Constructs a new record in memory with predefined
              * UpscaleDB record size. */
             Record(RecordType rt, payloadType pType);
 
-            /** Constructs a new record with prefilled byte array content. */
+            /* Constructs a new record with prefilled byte array content.
             Record(uint8_t * const content, keyType key) :
-                record(content), index(0), key(key) {}
+                record(content), index(0), key(key) {}*/
 
             /** Destructor deletes the in-memory byte array. */
 			~Record() { delete[] record; }
@@ -263,6 +270,11 @@ namespace udbgraph {
              * the amount of data once stored. Returns true
              * if the index was less than the record size. */
             bool operator>>(uint8_t &byte) noexcept;
+
+            /** Read the record from db using the transaction. Calls check
+             * if status was not UPS_KEY_NOT_FOUND, otherwise returns it and let the
+             * caller handle it. */
+            ups_status_t read(ups_db_t *db, keyType key, ups_txn_t *tr) noexcept;
 
             /** Write the record in db using the transaction. */
             void write(ups_db_t *db, ups_txn_t *tr);
@@ -316,28 +328,15 @@ namespace udbgraph {
         or aborted, so no records are written now.*/
         void clone(const RecordChain &other);
 
-        /* Appends a prefilled record to the list. This method
-         * is called when we fetch records from UpscaleDB. 
-        void put(uint8_t * const record, keyType key) {
-            content.push_back(Record(record, key));
-		}
-
-        * Gets the next record key from the list, or 0 if no more records
-         * or not persisted yet. This method is called when we store records
-         * in UpscaleDB. This method does NOT advance the iterator.
-        keyType getKey();
-
-        * Gets the next record from the list, or nullptr if no more records.
-         * This method is called when we store records in UpscaleDB.
-         * This method DOES advance the iterator.
-        uint8_t * const getRecord();*/
-
         /** Resets the content iterator to the beginning and all Record indexes
         right after the fixed part. */
         void reset();
 
         /** Clears the record list. */
         void clear();
+
+        /** Returns the chain status. */
+        RCState getState() { return state; }
 
         /** Sets the fixed field starting at fieldStart to the needed value
          * in the first record considering the actual record type. */
@@ -352,6 +351,11 @@ namespace udbgraph {
 
         /** Removes all records after the one pointed by iter. */
         void stripLeftover();
+
+        /** Reads the chain content to the requested level. Sets state according
+         * the actual read stuff, e. g. if only head record existed, FULL. Throws
+        exception if EMPTY was requested. */
+        void read(keyType key, ups_txn_t *tr, RCState level);
 
         /** Writes actual content into db, considering the old record keys in
          * oldKeys. The overlapping part with the content will be updated,

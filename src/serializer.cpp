@@ -30,10 +30,10 @@ void FixedFieldIO::initStatic() noexcept {
     }
     pos2sizes[RT_ROOT][FPR_VER_MAJOR] = sizeof(countType);
     pos2sizes[RT_ROOT][FPR_VER_MINOR] = sizeof(countType);
-    pos2sizes[RT_ROOT][FPR_CNT_INEDGE] = pos2sizes[RT_NODE][FPN_CNT_INEDGE] = sizeof(countType);
-    pos2sizes[RT_ROOT][FPR_CNT_OUTEDGE] = pos2sizes[RT_NODE][FPN_CNT_OUTEDGE] = sizeof(countType);
-    pos2sizes[RT_ROOT][FPR_CNT_UNEDGE] = pos2sizes[RT_NODE][FPN_CNT_UNEDGE] = sizeof(countType);
-    pos2sizes[RT_ROOT][FPR_CNT_FREDGE] = pos2sizes[RT_NODE][FPN_CNT_FREDGE] = sizeof(countType);
+    pos2sizes[RT_ROOT][FPN_CNT_INEDGE] = pos2sizes[RT_NODE][FPN_CNT_INEDGE] = sizeof(countType);
+    pos2sizes[RT_ROOT][FPN_CNT_OUTEDGE] = pos2sizes[RT_NODE][FPN_CNT_OUTEDGE] = sizeof(countType);
+    pos2sizes[RT_ROOT][FPN_CNT_UNEDGE] = pos2sizes[RT_NODE][FPN_CNT_UNEDGE] = sizeof(countType);
+    pos2sizes[RT_ROOT][FPN_CNT_FREDGE] = pos2sizes[RT_NODE][FPN_CNT_FREDGE] = sizeof(countType);
     pos2sizes[RT_DEDGE][FPE_NODE_START] = pos2sizes[RT_UEDGE][FPE_NODE_START] = sizeof(keyType);
     pos2sizes[RT_DEDGE][FPE_NODE_END] = pos2sizes[RT_UEDGE][FPE_NODE_END] = sizeof(keyType);
     pos2sizes[RT_CONT][FPC_HEAD] = sizeof(keyType);
@@ -87,9 +87,9 @@ uint64_t FixedFieldIO::getField(uint32_t fieldStart, uint8_t * const array) {
 
 void FixedFieldIO::checkPosition(uint32_t fieldStart, int recordType) {
     if(recordType >= RT_NOMORE || fieldStart > FIELD_VAR_MAX_POS) {
-        throw logic_error(string("Invalid record type (") + to_string(int(recordType)) +
+        throw DebugException(string("Invalid record type (") + to_string(int(recordType)) +
                           string(") or field position (") + to_string(fieldStart) +
-                          string("out of bounds.") );
+                          string(") out of bounds.") );
     }
     uint32_t len = pos2sizes[recordType][fieldStart];
     switch(len) {
@@ -99,10 +99,10 @@ void FixedFieldIO::checkPosition(uint32_t fieldStart, int recordType) {
     case 8:
         return;
     case 0:
-        throw logic_error(string("Invalid position (") + to_string(int(fieldStart)) +
+        throw DebugException(string("Invalid position (") + to_string(int(fieldStart)) +
                           string(") required for record type: ") + to_string(int(recordType)));
     default:
-        throw logic_error(string("Invalid value in pos2sizes: ") + to_string(len));
+        throw DebugException(string("Invalid value in pos2sizes: ") + to_string(len));
     }
 }
 
@@ -111,12 +111,10 @@ size_t RecordChain::Record::size = 0;
 constexpr uint32_t RecordChain::Record::recordVarStarts[RT_NOMORE];
 
 void RecordChain::Record::setSize(size_t s) {
-    if(size == 0) {
-        if(s <= FIELD_VAR_MAX_POS || s > UDB_MAX_RECORD_SIZE) {
-            throw logic_error("Invalid record size.");
-        }
-        size = s;
+    if(s <= FIELD_VAR_MAX_POS || s > UDB_MAX_RECORD_SIZE) {
+        throw DebugException("Invalid record size.");
     }
+    size = s;
 }
 
 
@@ -124,6 +122,16 @@ inline void RecordChain::Record::checkSize() {
     if(size == 0) {
         throw DatabaseException("Record size was not set.");
     }
+}
+
+RecordChain::Record::Record() :
+    record(new uint8_t[size]), index(0), key(keyType(KEY_INVALID)) {
+    upsKey.flags = upsKey._flags = 0;
+    upsKey.data = &key;
+    upsKey.size = sizeof(key);
+    upsRecord.flags = upsRecord.partial_offset = upsRecord.partial_size = 0;
+    upsRecord.size = 0;
+    upsRecord.data = nullptr;
 }
 
 RecordChain::Record::Record(RecordType rt, payloadType pType) :
@@ -179,9 +187,23 @@ inline bool RecordChain::Record::operator>>(uint8_t &byte) noexcept {
     return true;
 }
 
+ups_status_t RecordChain::Record::read(ups_db_t *db, keyType k, ups_txn_t *tr) noexcept {
+    key = k;
+    ups_status_t result = ups_db_find(db, tr, &upsKey, &upsRecord, 0);
+    if(result != UPS_KEY_NOT_FOUND) {
+        check(result);
+        delete[] record;
+        record = new uint8_t[size];
+        memcpy(record, upsRecord.data, size);
+        index = recordVarStarts[*record];
+    }
+    return result;
+}
+
 void RecordChain::Record::write(ups_db_t *db, ups_txn_t *tr) {
     uint32_t flags = UPS_OVERWRITE;
-    // TODO remove/
+    upsRecord.size = size;
+    upsRecord.data = record;
     check(ups_db_insert(db, tr, &upsKey, &upsRecord, flags));
 }
 
@@ -191,12 +213,14 @@ void RecordChain::setRecordSize(size_t s) {
 
 RecordChain::RecordChain(RecordType rt, payloadType pt) : pType(pt) {
     Record::checkSize();
+    state = RCState::EMPTY;
     content.push_back(Record(rt, pt));
     iter = content.begin();
 }
 
 void RecordChain::clone(const RecordChain &other) {
     state = other.state;
+    pType = other.pType;
     // recordType must remain intact
     auto itThis = content.begin();
     auto itOther = other.content.begin();
@@ -221,20 +245,6 @@ void RecordChain::clone(const RecordChain &other) {
     reset();
 }
 
-/*keyType RecordChain::getKey() {
-    if(iter == content.cend()) {
-        return 0;
-    }
-    return iter->upsKey;
-}
-
-uint8_t * const RecordChain::getRecord() {
-    if(iter == content.cend()) {
-        return nullptr;
-    }
-    return iter++->record;
-}*/
-
 void RecordChain::reset() {
     iter = content.begin();
     for(Record &rec : content) {
@@ -243,21 +253,23 @@ void RecordChain::reset() {
 }
 
 void RecordChain::clear() {
+    RecordType rt = RecordType(getHeadField(FP_RECORDTYPE));
     content.clear();
+    content.push_back(Record(rt, pType));
     iter = content.begin();
     state = RCState::EMPTY;
 }
 
 void RecordChain::setHeadField(uint32_t fieldStart, uint64_t value) {
     if(content.size() == 0) {
-        throw logic_error("No record!");
+        throw DebugException("No record!");
     }
     content.begin()->setField(fieldStart, value);
 }
 
 uint64_t RecordChain::getHeadField(uint32_t fieldStart) {
     if(content.size() == 0) {
-        throw logic_error("No record!");
+        throw DebugException("No record!");
     }
     return content.begin()->getField(fieldStart);
 }
@@ -276,6 +288,100 @@ void RecordChain::stripLeftover() {
     for(iter++; iter != content.end();) {
         iter = content.erase(iter);
     }
+}
+
+void RecordChain::read(keyType key, ups_txn_t *tr, RCState level) {
+RCState was = state;
+    if(level == RCState::EMPTY) {
+        throw DebugException("Cannot read no records (requested level = RCState::EMPTY).");
+    }
+    if(level <= state) {
+        // nothing to do
+        return;
+    }
+    if(state == RCState::EMPTY) {
+        // we read everything from disk
+        content.clear();
+    }
+    else {
+        // we continue on the record we read last
+        auto last = content.end();
+        last--;
+        key = last->getField(FP_NEXT); // cannot be invalid
+    }
+    if(key == KEY_INVALID) {
+        throw DebugException("Trying to read an element for invalid key.");
+    }
+    size_t desired = numeric_limits<size_t>::max(); // means all
+    size_t payloadStart = desired;
+    RecordType recType;
+    if(level == RCState::HEAD) {
+        desired = 1;
+    }
+    if(state == RCState::HEAD && level == RCState::PARTIAL) {
+        recType = RecordType(content.begin()->getField(FP_RECORDTYPE));
+        payloadStart = Record::recordVarStarts[recType];
+        if(recType == RT_NODE || recType == RT_ROOT) {
+            size_t totalLen = content.begin()->getField(FPN_CNT_INEDGE) +
+                content.begin()->getField(FPN_CNT_OUTEDGE) +
+                content.begin()->getField(FPN_CNT_UNEDGE) +
+                content.begin()->getField(FPN_CNT_FREDGE);
+            payloadStart += totalLen * sizeof(keyType);
+        }
+        desired = payloadStart = payloadStart/ Record::getSize() + 1;
+    }
+    // for PARTIAL we must calculate from head
+    while(true) {
+        Record record;
+        ups_status_t result = record.read(db, key, tr);
+        if(result == UPS_KEY_NOT_FOUND) {
+            if(content.size() == 0) {
+                throw ExistenceException("The element cannot be read, might have been deleted meanwhile.");
+            }
+            else {
+                throw CorruptionException("Broken record chain.");
+            }
+        }
+        if(content.size() == 0) {
+            recType = RecordType(record.getField(FP_RECORDTYPE));
+            payloadStart = Record::recordVarStarts[recType];
+            if(recType == RT_NODE || recType == RT_ROOT) {
+                size_t totalLen = record.getField(FPN_CNT_INEDGE) +
+                    record.getField(FPN_CNT_OUTEDGE) +
+                    record.getField(FPN_CNT_UNEDGE) +
+                    record.getField(FPN_CNT_FREDGE);
+                payloadStart += totalLen * sizeof(keyType);
+            }
+            payloadStart = payloadStart/ Record::getSize() + 1;
+            if(level == RCState::PARTIAL) {
+                if(recType == RT_DEDGE || recType == RT_UEDGE) {
+                    // edge
+                    desired = 1;
+                }
+                if(recType == RT_NODE || recType == RT_ROOT) {
+                    // node or root
+                    desired = payloadStart;
+                }
+            }
+            pType = record.getField(FP_PAYLOADTYPE);
+        }
+        key = record.getField(FP_NEXT);
+        content.push_back(move(record));
+        if(key == KEY_INVALID) {
+            state = RCState::FULL;
+            break;
+        }
+        if(content.size() == desired) {
+            if(desired > 1 || (desired == 1 && payloadStart == 1)) {
+                state = RCState::PARTIAL;
+            }
+            else {
+                state = RCState::HEAD;
+            }
+            break;
+        }
+    }
+    iter = content.begin();
 }
 
 void RecordChain::write(deque<keyType> &oldKeys, keyType key, ups_txn_t *tr) {
@@ -298,15 +404,20 @@ void RecordChain::write(deque<keyType> &oldKeys, keyType key, ups_txn_t *tr) {
         itNext++; // definitely exists
         if(itPrev != content.begin()) {
             itPrev--; // if it equals to itThis there is no previous
+            itThis->setField(FPC_PREV, itPrev->getKey());
         }
         while(itThis != content.end()) {
-            itThis->setKey(newKey = keyGen->nextKey());
-            itThis->setField(FPC_HEAD, key);
+            if(itThis != newStart) {
+                itThis->setKey(newKey = keyGen->nextKey());
+            }
+            if(itThis != content.begin()) {
+                itThis->setField(FPC_HEAD, key);
+            }
             if(itNext != content.end()) {
                 itNext->setField(FPC_PREV, newKey);
                 itNext++;
             }
-            if(itPrev != itNext) {
+            if(itPrev != itThis) {
                 itPrev->setField(FP_NEXT, newKey);
                 itPrev++;
             }
@@ -321,7 +432,7 @@ void RecordChain::write(deque<keyType> &oldKeys, keyType key, ups_txn_t *tr) {
     }
     else {
         if(itThis == content.begin()) {
-            throw logic_error("Trying to write no records.");
+            throw DebugException("Trying to write no records.");
         }
         // terminate the record chain
         itThis--;
@@ -372,7 +483,7 @@ void RecordChain::read(uint8_t &b) {
             return;
         }
     }
-    throw logic_error("No more data in RecordChain to read.");
+    throw DebugException("No more data in RecordChain to read.");
 }
 
 Converter& Converter::write(const char * const p) {

@@ -10,7 +10,6 @@ COPYRIGHT COMES HERE
 #include<unordered_map>
 #include<memory>
 #include<utility>
-#include<stdexcept>
 #include<ups/upscaledb.h>
 
 #if USE_NVWA == 1
@@ -34,12 +33,18 @@ namespace udbgraph {
     /** Possible Graph Elem states describing chainOrig, chainNew and transaction states.
     These states are independent of the GraphElem payload changes. */
     enum class GEState {
-        /** A new object yet independent of both the disk DB and the Database object
-         * or already detached from the database. Both chainOrig and chainNew are empty.*/
-        NND,
+        /** A new or deleted object independent of both the disk DB and the Database
+         * object. Both chainOrig and chainNew are empty.*/
+        DU,
 
-        /** A new object registered in the Database object but not present in the disk DB.
-        Both chainOrig and chainNew are empty.*/
+        /** An object after closing a transaction living in the disk DB at the end
+         * of transaction with known key. Note: an other transaction may delete it
+         * meanwhile. Both chainOrig and chainNew are empty.*/
+        DK,
+
+        /** An object once present in the disk DB but later deleted during the
+         * open transaction. It did not exist before the transaction. It is registered
+         * in the Database. Both chainOrig and chainNew are empty.*/
         NN,
 
         /** An object in open transaction and written to disk DB. chainOrig is
@@ -50,11 +55,8 @@ namespace udbgraph {
          * Thus chainOrig and chainNew are filled. */
         CC,
 
-        /** An object living after a closed transaction. Both chainOrig and chainNew
-         * are filled, but as this object is not member of a transaction, it can be detached. */
-        CCA,
-
-        /** An object deleted in a transaction. chainOrig is filled but chainNew is empty. */
+        /** An object deleted in an open transaction, but existed before starting it.
+         * chainOrig is filled but chainNew is empty. */
         CN,
 
         /** An Edge being deleted as a side effect of a node delete in a transaction.
@@ -90,14 +92,6 @@ namespace udbgraph {
     Instances of this class cannot be copied, they can be only accessed via shared_ptr */
     class Database final : CheckUpsCall, public std::enable_shared_from_this<Database> {
     protected:
-        /** True if this Database instance is intended to use in multithreaded
-         * environment. If yes, the GraphElem objects will be invalidated and detached after
-         * a transaction end, because in the time period until the next operation
-         * on that object an other thread may alter the corresponding database
-         * records. In singlethreaded mode the objects won't be invalidated
-         * after a transaction. */
-        bool multithreaded = true;
-
         /** The UpscaleDB environment in use. */
         ups_env_t *env = nullptr;
 
@@ -149,14 +143,13 @@ namespace udbgraph {
         std::string appName;
 
         /** See the static newInstance method. */
-        Database(bool mt, uint32_t vmaj, uint32_t vmin, std::string name) noexcept :
-            multithreaded(mt), verMajor(vmaj), verMinor(vmin), appName(name.substr(0, APP_NAME_LENGTH - 1)) {}
+        Database(uint32_t vmaj, uint32_t vmin, std::string name) noexcept :
+            verMajor(vmaj), verMinor(vmin), appName(name.substr(0, APP_NAME_LENGTH - 1)) {}
 
     public:
         /** Creates a Database instance, which is usable only after an open or create call.
          * The shared_ptr holding the instance is used only outside this library. Inside
          * it is always stored as weak_ptr to prevent memory leak.
-          @param mt tells if the application will be multithreaded
           @param vmaj application major version number. Database and application with
             the same major version number should be compatible This is the value the
             application sets to check against the DB or create the DB with.
@@ -167,8 +160,8 @@ namespace udbgraph {
           counts multibyte characters as more than one unit in size. If one does
           not consider this, truncating the name at APP_NAME_LENGTH - 1 may truncate
           multibyte characters. */
-        static std::shared_ptr<Database> newInstance(bool mt, uint32_t vmaj, uint32_t vmin, std::string name) noexcept {
-            return std::shared_ptr<Database>(new Database(mt, vmaj, vmin, name));
+        static std::shared_ptr<Database> newInstance(uint32_t vmaj, uint32_t vmin, std::string name) noexcept {
+            return std::shared_ptr<Database>(new Database(vmaj, vmin, name));
         }
 
         /** Sets the global UpscaleDB error handler. */
@@ -191,13 +184,10 @@ namespace udbgraph {
 		/** Does not allow copying. */
         Database& operator=(const Database &t) = delete;
 
-        /** Returns if the database is used in multithreaded mode. */
-        bool isMultithreaded() const noexcept { return multithreaded; }
-
         /** Creates and opens a database with the specified filename, access
          * bits and UpscaleDB record size. Also creates the global root node.
         If the record size is so small, that the fixed fields for a record type would
-        completely fill, or is bigger than UDB_MAX_RECORD_SIZE (1M), logic_error
+        completely fill, or is bigger than UDB_MAX_RECORD_SIZE (1M), DebugException
         is thrown. */
         void create(const char *filename, uint32_t mode = 0644, size_t recordSize = UDB_DEF_RECORD_SIZE);
 
@@ -270,16 +260,15 @@ namespace udbgraph {
         Lookup occurs in transLockedElems. */
         transLockedElemsMapType::iterator getCheckTransLocked(transHandleType th);
 
+        /** Checks if the given key locking is compatible with the tr. */
+        void checkKeyVsTrans(keyType key, Transaction &tr) const;
+
         /** Checks if the GraphElem with the given key is member of an other
          * (so not the one owning th) transaction. More precisely, if
         ro.readonly XOR containing.readonly is true, throws exception.
         Exception also comes when both are RW and the container is an other
         one. */
         void checkAlienBeforeWrite(keyType key, Transaction &tr) const;
-
-        /** This variant takes also a bool indicating if the key was checked and
-         * found in allLockedElems. */
-        void checkAlienBeforeWrite(keyType key, Transaction &tr, bool keyInAll) const;
 
         /** Checks all elems in toCheck. */
         void checkAlienBeforeWrite(std::deque<keyType> &toCheck, Transaction &tr) const;
@@ -409,7 +398,7 @@ namespace udbgraph {
         std::unique_ptr<Payload> payload;
 
         /** Actual state of this instance. */
-        GEState state = GEState::NND;
+        GEState state = GEState::DU;
 
         /** Key for the first record of this elem. An elem gets a real key only when
         it is about to be written in DB. The GEFactory creation mechanism is too
@@ -494,11 +483,13 @@ protected:
 
 // ----------- state transition functions ------------
 
-        /* Performs actual insert after serializing this. */
-        virtual void insert(ups_txn_t *tr);
+        /** Tries to read the record chain to the given level using the stored key,
+         * throws exception if not found. Sets state=CC and deserializes into payload
+         * if FULL was requested, PP otherwise. Throws exception if EMPTY was requested. */
+        void read(ups_txn_t *tr, RCState level);
 
-        /* Performs actual update after serializing this. */
-        void update(ups_txn_t *tr);
+        /** Performs actual insert/update after serializing this. */
+        virtual void write(ups_txn_t *tr);
 
         /** Sets the new state, updates payload, chainOrig and chainNew after
         according to te's value (ABORT or COMMIT). */
@@ -573,9 +564,9 @@ protected:
         /** Here it returns the two endpoints if state is NND, otherwise nothing. */
         virtual std::deque<keyType> getConnectedElemsBeforeWrite();
 
-        /* Performs actual insert after serializing this, including updateing ends
+        /** Performs actual insert/update after serializing this, including updateing ends
         for brand-new edge. */
-        virtual void insert(ups_txn_t *tr);
+        virtual void write(ups_txn_t *tr);
 
     };
 
@@ -693,7 +684,7 @@ protected:
         static payloadType reg(CreatorFunction classCreator);
 
         /** Creates a class instance based on the given type. If it is unknown,
-         * throws logic_error.
+         * throws DebugException.
         @param db the Database instance to use with. */
         static std::shared_ptr<GraphElem> create(std::shared_ptr<Database> db, payloadType typeKey);
     };

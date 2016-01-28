@@ -20,6 +20,7 @@ COPYRIGHT COMES HERE
 #endif
 #endif
 
+#include<string>
 #include<cstring>
 #include<exception>
 #include<ups/upscaledb.h>
@@ -89,6 +90,19 @@ in order to preserve polimorphism.*/
         ups_status_t getErrno() const noexcept { return errn; }
     };
 
+    /** Intended for reporting internal errors of the UDBGraph library. Should not
+    occur if mature enough. */
+    class DebugException : public BaseException {
+    public:
+        DebugException(const char * const cause) noexcept {
+            makeDescr("DebugException", cause);
+        }
+
+        DebugException(const std::string cause) noexcept {
+            makeDescr("DebugException", cause.c_str());
+        }
+    };
+
     /** Exception class for graph management related errors, base class for more specific ones. */
     class GraphException : public BaseException {
     protected:
@@ -120,6 +134,12 @@ in order to preserve polimorphism.*/
     class ExistenceException : public GraphException {
     public:
         ExistenceException(const char * const cp) noexcept : GraphException("ExistenceException", cp) {}
+    };
+
+    /** Exception for reporting database integrity problems. */
+    class CorruptionException : public GraphException {
+    public:
+        CorruptionException(const char * const cp) noexcept : GraphException("CorruptionException", cp) {}
     };
 
     /** Exception for reporting database management related problems. */

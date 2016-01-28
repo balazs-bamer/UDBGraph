@@ -191,10 +191,10 @@ void Dump::Record::printRoot() const {
         cout << record[i];
     }
     cout << ')';
-    print("in", FPR_CNT_INEDGE);
-    print("out", FPR_CNT_OUTEDGE);
-    print("un", FPR_CNT_UNEDGE);
-    print("fr", FPR_CNT_FREDGE);
+    print("in", FPN_CNT_INEDGE);
+    print("out", FPN_CNT_OUTEDGE);
+    print("un", FPN_CNT_UNEDGE);
+    print("fr", FPN_CNT_FREDGE);
 }
 
 void Dump::Record::printACL() const {

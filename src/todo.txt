@@ -1,2 +1,16 @@
--database creation and open parameters should be adjustable and presetrtable in cmake
--nvwa/debug_new.cpp: builtin_trap is not enough, there must be something Windows or Mac compatible solution as well.
+- getNeighbours/getEdges: gets a comparison object and if the matched item is free, it returns. If locked by an other transaction, throws Exception.
+
+- Partial reading of RecordChain in 2 steps:
+	-head only
+	-if node: edges until the payload appears.
+- More reading on demand:
+	-examine/modify edges
+	-get payload.
+- This feature can be switched off: always read complete chain.
+
+- Graph elems after a transaction retain key even if multithreading - split NND?
+  The application must be preapred of concurrent lock or delete.
+
+- Utility to list / delete orphaned nodes. The applications must avoid orphaning nodes, so this is a debug tool.
+
+-database creation and open parameters should be adjustable and presettable in cmake or in Database constructor

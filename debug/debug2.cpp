@@ -19,7 +19,7 @@ void UPS_CALLCONV udbgraphErrorHandler(int level, const char *message) {
 
 void notReady() {
 	try {
-		shared_ptr<Database> db = Database::newInstance(false, 1, 1, "debug2");
+		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
                 shared_ptr<GraphElem> node = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
 		db->write(node);
 	}
@@ -30,7 +30,7 @@ void notReady() {
 
 void singleInsertCreate() {
 	try {
-		shared_ptr<Database> db = Database::newInstance(false, 1, 1, "debug2");
+		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
 		db->create("debug2a.udbg", 0644);
 		shared_ptr<GraphElem> node = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
 		db->write(node);
@@ -43,7 +43,7 @@ void singleInsertCreate() {
 
 void singleInsertOpen() {
 	try {
-		shared_ptr<Database> db = Database::newInstance(false, 1, 1, "debug2");
+		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
 		db->open("debug2a.udbg");
 		shared_ptr<GraphElem> node = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
 		db->write(node);
@@ -111,7 +111,7 @@ payloadType MoreWritesPerTrans::_staticType;
 void moreWritesPerTrans() {
 	MoreWritesPerTrans::setID(GEFactory::reg(MoreWritesPerTrans::create));
 	try {
-		shared_ptr<Database> db = Database::newInstance(false, 1, 1, "debug2");
+		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
 		db->open("debug2a.udbg");
 		{
 			Transaction tr = db->beginTrans(false);

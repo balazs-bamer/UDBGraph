@@ -4,6 +4,7 @@
 * Database handling core
 * Transaction management
 * Payload serializing and deserializing
+* Record chain reading and writing
 * UpscaleDB record management
 * Node insert and update
 
@@ -130,8 +131,7 @@ UpscaleDB records have 64-bit unsigned keys, incremented as new records are inse
 
 All user actions ar designed such that first the library makes sure that every involved graph element is accessible (not locked by other transactions and the user has appropriate permissions). If this check succeeds, only then starts the phase changing inner status of the library and the graph element instances. In this phase only UpscaleDB exceptions may sign fatal errors.
 
-All graph element instances maintain two record chains. One of them holds the original record contents before the transaction, the other the result of modification(s) during the transactions. For better performance, it is possible to fill these partially, so leaving edge arrays and / or payload off when only the beginning is interesting.
-
+All graph element instances maintain two record chains. One of them holds the original record contents before the transaction, the other the result of modification(s) during the transactions. For better performance, it is possible to read and write these partially, so leaving edge arrays and / or payload off when only the beginning is interesting.
 
 ### Classes
 
@@ -144,11 +144,13 @@ KeyGenerator  		|util.h    		|Class template providing a unique key generator by
 LockGuard2    		|util.h			|Class for simultaneously locking two mutexes and have the destructor for RAII cleanup in case of an exception.
 BaseException 		|exception.h	|Common base class for all custom exceptions. It stores the description in a character array, and if enabled, appends a demangled backtrace to it. Backtrace id enabled if DEBUG is defined and we use a glibc and glibcxx.
 UpsException 		|exception.h	|Exception class for UpscaleDB BaseException handling, uses its built-in messages.
+DebugException 		|exception.h	|Intended for reporting internal errors of the UDBGraph library. Should not occur if mature enough.
 GraphException 		|exception.h	|Exception class for graph management related errors, base class for more specific ones.
 PermissionException	|exception.h	|Exception for reporting access permission related errors.
 TransactionException|exception.h	|Exception for reporting transaction-related errors.
 LockedException 	|exception.h	|Exception for reporting locking problems, for example an other transaction locks a graph elem we want to perform an action on.
 ExistenceException 	|exception.h	|Exception for reporting problems regarding accessing deleted or not registered elements.
+CorruptionException	|exception.h	|Exception for reporting database integrity problems.
 DatabaseException	|exception.h	|Exception for reporting database management related problems.
 IllegalMethodException|exception.h	|Exception for reporting illegal method use, for example setting end on a node.
 IllegalArgumentException|exception.h|Exception for reporting illegal arguments.
@@ -196,6 +198,6 @@ Most user operations may throw exceptions for various reasons:
 
 Other errors possible are:
 * Errors signed by UpscaleDB.
-* logic_error signing programmer error in UDBGraph. When it is mature enough, no logic_error should occur any more.
+* DebugException signing programmer error in UDBGraph. When it is mature enough, no such exceptions should occur any more.
 
 I'm writing unit tests in the debug subdirectory to make sure each part works correctly. Moreover, the dumpdb utility is provided to dump the database contents (record chains and fixed fields) on standard output.
