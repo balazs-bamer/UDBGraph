@@ -129,8 +129,13 @@ void Database::open(const char *filename) {
     check(ups_cursor_move(cursor, &key, &rec, UPS_CURSOR_FIRST));
     check(ups_cursor_close(cursor));
     RecordChain::setRecordSize(rec.size);
-// TODO read root and check version
+    Transaction tr = doBeginTrans(false);
+    bool matches = dynamic_pointer_cast<Root>(doRead(KEY_ROOT, tr, RCState::HEAD))->doesMatch(verMajor, verMinor, appName);
+    doEndTrans(tr, TransactionEnd::ABORT);
     ready = true;
+    if(!matches) {
+        throw DatabaseException("Invalid version or application name.");
+    }
 }
 
 void Database::close() {
@@ -240,7 +245,6 @@ void Database::doEndTrans(Transaction &tr, TransactionEnd te) {
     // delete from the map containing UpscaleDB transactions
     upsTransactions.erase(trHandle);
     // delete from all locked graph elements
-    // TODO remove for(auto it = foundLockedElems->second.cbegin(); it != foundLockedElems->second.cend(); it++) {
     for(auto &kv : foundLockedElems->second) {
         kv.second->endTrans(te);
         // remove element only if this transaction was the last read only one
@@ -294,30 +298,37 @@ void Database::checkAlienBeforeWrite(deque<keyType> &toCheck, Transaction &tr) c
 }
 
 void Database::checkACL(shared_ptr<GraphElem> &ge, Transaction &tr) const {
-    if(ge->getACLkey() != keyType(ACL_FREE)) {
+    if(ge->getACLkey() != static_cast<keyType>(ACL_FREE)) {
         throw PermissionException("Not authorized for an operation on an elem.");
     }
 }
 
-void Database::checkACLandRegister(deque<keyType> &toCheck, transLockedElemsMapType::iterator &foundLockedElems, Transaction &tr) {
+deque<shared_ptr<GraphElem>> Database::checkACLandRegister(deque<keyType> &toCheck, transLockedElemsMapType::iterator &foundLockedElems, Transaction &tr) {
+    auto foundUpsTrans = upsTransactions.find(tr.getHandle());
+    ups_txn_t *upsTr = foundUpsTrans->second;
     deque<shared_ptr<GraphElem>> toBeRegistered;
+    deque<shared_ptr<GraphElem>> result;
     for(const keyType &key : toCheck) {
         auto found = allLockedElems.find(key);
         if(found == allLockedElems.end()) {
-            // not found, we save it for registering
-            // TODO load partially here:
-            // shared_ptr<GraphElem> loaded = loadSomehow(*it);
-            // checkACL(loaded, tr);
-            // toBeRegistered.push_back(loaded);
+            // not found, we read it for registering
+            shared_ptr<GraphElem> loaded = doBareRead(key, RCState::HEAD, upsTr);
+            checkACL(loaded, tr);
+            toBeRegistered.push_back(loaded);
+            loaded->checkBeforeWrite();
+            result.push_back(loaded);
         }
         else {
             // found, check ACL
             checkACL(found->second, tr);
+            found->second->checkBeforeWrite();
+            result.push_back(found->second);
         }
     }
     for(auto &elem : toBeRegistered) {
         registerElem(elem, foundLockedElems, tr);
     }
+    return result;
 }
 
 void Database::registerElem(shared_ptr<GraphElem> &ge, transLockedElemsMapType::iterator &foundLockedElems, Transaction &tr) {
@@ -329,15 +340,77 @@ void Database::registerElem(shared_ptr<GraphElem> &ge, transLockedElemsMapType::
     }
 }
 
+shared_ptr<GraphElem> Database::doBareRead(keyType key, RCState level, ups_txn_t *upsTr) {
+    // first try to read the head record
+    ups_key_t upsKey;
+    ups_record_t upsRecord;
+    upsKey.flags = upsKey._flags = 0;
+    upsKey.data = &key;
+    upsKey.size = sizeof(key);
+    upsRecord.flags = upsRecord.partial_offset = upsRecord.partial_size = 0;
+    upsRecord.size = 0;
+    upsRecord.data = nullptr;
+    ups_status_t result = ups_db_find(db, upsTr, &upsKey, &upsRecord, 0);
+    if(result == UPS_KEY_NOT_FOUND) {
+        throw ExistenceException("Requested graph element not found in the database.");
+    }
+    check(result);
+    RecordType recType = RecordType(FixedFieldIO::getField(FP_RECORDTYPE, reinterpret_cast<uint8_t *>(upsRecord.data)));
+    shared_ptr<GraphElem> ret;
+    if(recType == RT_ROOT) {
+        shared_ptr<GraphElem> root(new Root(shared_from_this(), 0, 0, ""));
+        ret = move(root);
+    }
+    else {
+        payloadType plType = FixedFieldIO::getField(FP_PAYLOADTYPE, reinterpret_cast<uint8_t *>(upsRecord.data));
+        ret = GEFactory::create(shared_from_this(), plType);
+    }
+    ret->setHead(key, reinterpret_cast<uint8_t *>(upsRecord.data));
+    ret->read(upsTr, level);
+    return ret;
+}
+
+shared_ptr<GraphElem> Database::doRead(keyType key, Transaction &tr, RCState level) {
+    transHandleType trHandle = tr.getHandle();
+    transLockedElemsMapType::iterator foundLockedElems = getCheckTransLocked(trHandle);
+    auto foundUpsTrans = upsTransactions.find(trHandle);
+    ups_txn_t *upsTr = foundUpsTrans->second;
+    lockedElemsMapType::iterator foundElem = allLockedElems.find(key);
+    if(foundElem == allLockedElems.end()) {
+        // not found, we must read it from disk
+        shared_ptr<GraphElem> ret = doBareRead(key, level, upsTr);
+        checkACL(ret, tr);
+        registerElem(ret, foundLockedElems, tr);
+        return ret;
+    }
+    else {
+        lockedElemsMapType::iterator foundInTr = foundLockedElems->second.find(key);
+        if(foundInTr != foundLockedElems->second.end()) {
+            // we own it, no more checks and registering
+            shared_ptr<GraphElem> ret = foundInTr->second;
+            ret->read(upsTr, level);
+            return ret;
+        }
+        else {
+            // somebody else owns it
+            checkKeyVsTrans(key, tr);
+            // now it is sure that this transaction is read-only and the one that
+            // owns it is also read-only
+            shared_ptr<GraphElem> ret = foundElem->second;
+            checkACL(ret, tr);
+            registerElem(ret, foundLockedElems, tr);
+            return ret;
+        }
+    }
+}
+
 void Database::doWrite(shared_ptr<GraphElem> &ge, Transaction &tr) {
     if(tr.isReadonly()) {
         throw TransactionException("Trying to write during a read-only transaction.");
     }
-    GEState state = ge->getState();
-    if(state == GEState::CN || state == GEState::NN) {
-        throw ExistenceException("Trying to write an already deleted element.");
-    }
+    ge->checkBeforeWrite();
     keyType key = ge->getKey();
+    GEState state = ge->getState();
     if(key == KEY_INVALID) {
         if(state != GEState::DU) {
             throw DebugException(string("doWrite: illegal state with KEY_INVALID: ") + toString(state));
@@ -345,12 +418,14 @@ void Database::doWrite(shared_ptr<GraphElem> &ge, Transaction &tr) {
         ge->key = key = keyGen->nextKey();
     }
     transHandleType trHandle = tr.getHandle();
-    auto foundLockedElems = getCheckTransLocked(trHandle);
+    transLockedElemsMapType::iterator foundLockedElems = getCheckTransLocked(trHandle);
     /* This must be present because the transaction exists. */
     auto foundUpsTrans = upsTransactions.find(trHandle);
     ups_txn_t *upsTr = foundUpsTrans->second;
-    auto foundElem = allLockedElems.find(key);
+    lockedElemsMapType::iterator foundElem = allLockedElems.find(key);
+    deque<shared_ptr<GraphElem>> affected;
     if(foundElem == allLockedElems.end()) {
+        // writing brand new element or a detached existing one
         if(state == GEState::DK) {
             ge->read(upsTr, RCState::FULL);
         }
@@ -360,15 +435,15 @@ void Database::doWrite(shared_ptr<GraphElem> &ge, Transaction &tr) {
         checkACL(ge, tr);
         // until the middle of the following function call an exception may ruin
         // writing the elem, and no change is made in the registration structures
-        checkACLandRegister(toCheck, foundLockedElems, tr);
+        affected = checkACLandRegister(toCheck, foundLockedElems, tr);
         registerElem(ge, foundLockedElems, tr);
-        // writing brand new element or a detached existing one
     }
     else {
         // we already know that key is in allLockedElems
         checkKeyVsTrans(key, tr);
+        // if passed, it is sure we already own the elem
     }
-    ge->write(upsTr);
+    ge->write(affected, upsTr);
 }
 
 keyType Database::getFirstFreeKey() {
@@ -423,6 +498,13 @@ Payload& GraphElem::pl() {
     return *payload;
 }
 
+void GraphElem::setHead(keyType k, const uint8_t * const record) {
+    key = k;
+    chainOrig.setHead(key, record);
+    chainNew.clone(chainOrig);
+    aclKey = chainNew.getHeadField(FP_ACL);
+}
+
 void GraphElem::writeFixed() {
     chainNew.setHeadField(FP_ACL, aclKey);
 }
@@ -437,19 +519,25 @@ void GraphElem::serialize(ups_txn_t *tr) {
     chainNew.write(oldKeys, key, tr);
 }
 
+void GraphElem::checkBeforeWrite() {
+    if(state == GEState::CN || state == GEState::NN) {
+        throw ExistenceException("Trying to write an already deleted element.");
+    }
+}
+
 void GraphElem::read(ups_txn_t *tr, RCState level) {
     chainOrig.read(key, tr, level);
     chainNew.clone(chainOrig);
     if(level == RCState::FULL) {
         state = GEState::CC;
-        payload->deserialize(converter);
+        // TODO move elsewhere payload->deserialize(converter);
     }
     else {
         state = GEState::PP;
     }
 }
 
-void GraphElem::write(ups_txn_t *tr) {
+void GraphElem::write(deque<shared_ptr<GraphElem>> &connected, ups_txn_t *tr) {
     serialize(tr);
     if(state == GEState::DU) {
         state = GEState::NC;
@@ -479,8 +567,32 @@ void GraphElem::endTrans(TransactionEnd te) {
     }
 }
 
+void AbstractNode::addEdge(keyType edgeKey, FieldPosNode where, ups_txn_t *tr) {
+    if(chainNew.getState() < RCState::PARTIAL) {
+        // make sure we have the edge arrays
+        chainNew.read(key, tr, RCState::PARTIAL);
+    }
+    chainNew.addEdge(edgeKey, where, tr);
+}
+
 Root::Root(shared_ptr<Database> d, uint32_t vmaj, uint32_t vmin, string name) :
     AbstractNode(d, RT_ROOT, unique_ptr<Payload>(new EmptyNode(PT_EMPTY_NODE))), verMajor(vmaj), verMinor(vmin), appName(name) {
+}
+
+bool Root::doesMatch(uint32_t verMaj, uint32_t verMin, string appN) {
+    return verMaj == verMajor && appN == appName;
+}
+
+void Root::setHead(keyType key, const uint8_t * const record) {
+    GraphElem::setHead(key, record);
+    verMajor = static_cast<uint32_t>(chainNew.getHeadField(FPR_VER_MAJOR));
+    verMinor = static_cast<uint32_t>(chainNew.getHeadField(FPR_VER_MINOR));
+    uint8_t ch = chainNew.getHeadField(FPR_APP_NAME);
+    int i = 1;
+    while(ch != 0) {
+        appName += static_cast<char>(ch);
+        ch = chainNew.getHeadField(FPR_APP_NAME + i++);
+    }
 }
 
 void Root::writeFixed() {
@@ -499,8 +611,8 @@ void Root::writeFixed() {
 }
 
 void Edge::setEnds(shared_ptr<GraphElem> &start, shared_ptr<GraphElem> &end) {
-    if(chainNew.getHeadField(FPE_NODE_START) != keyType(KEY_INVALID) ||
-        chainNew.getHeadField(FPE_NODE_END) != keyType(KEY_INVALID)) {
+    if(chainNew.getHeadField(FPE_NODE_START) != static_cast<keyType>(KEY_INVALID) ||
+        chainNew.getHeadField(FPE_NODE_END) != static_cast<keyType>(KEY_INVALID)) {
         throw ExistenceException("Ends are already set.");
     }
     if(start->getType() != RT_NODE || end->getType() != RT_NODE) {
@@ -508,7 +620,8 @@ void Edge::setEnds(shared_ptr<GraphElem> &start, shared_ptr<GraphElem> &end) {
     }
     keyType keyStart = start->getKey();
     keyType keyEnd = end->getKey();
-    if(keyStart ==  keyType(KEY_INVALID) || keyEnd == keyType(KEY_INVALID)) {
+    if(keyStart ==  static_cast<keyType>(KEY_INVALID) ||
+            keyEnd == static_cast<keyType>(KEY_INVALID)) {
         throw IllegalArgumentException("Ends must have valid keys.");
     }
     chainNew.setHeadField(FPE_NODE_START, keyStart);
@@ -525,24 +638,35 @@ deque<keyType> Edge::getConnectedElemsBeforeWrite() {
     return result;
 }
 
-void Edge::write(ups_txn_t *tr) {
+void DirEdge::write(deque<shared_ptr<GraphElem>> &connected, ups_txn_t *tr) {
     bool needUpdateEnds = state == GEState::DU;
-    GraphElem::write(tr);
+    GraphElem::write(connected, tr);
     if(needUpdateEnds) {
-        // TODO update ends
+        // first key is for edge start, the edge comes out of this node
+        dynamic_pointer_cast<AbstractNode>(connected[0])->addEdge(key, FPN_CNT_OUTEDGE, tr);
+        // second key is for edge end, the edge goes into this node
+        dynamic_pointer_cast<AbstractNode>(connected[1])->addEdge(key, FPN_CNT_INEDGE, tr);
+    }
+}
+
+void UndirEdge::write(deque<shared_ptr<GraphElem>> &connected, ups_txn_t *tr) {
+    bool needUpdateEnds = state == GEState::DU;
+    GraphElem::write(connected, tr);
+    if(needUpdateEnds) {
+        dynamic_pointer_cast<AbstractNode>(connected[0])->addEdge(key, FPN_CNT_UNEDGE, tr);
+        dynamic_pointer_cast<AbstractNode>(connected[1])->addEdge(key, FPN_CNT_UNEDGE, tr);
     }
 }
 
 unordered_map<payloadType, GEFactory::CreatorFunction> GEFactory::registry;
 mutex GEFactory::typeMtx;
-payloadType GEFactory::typeCounter = payloadType(PT_NOMORE);
+payloadType GEFactory::typeCounter = static_cast<payloadType>(PT_NOMORE);
 
-// TODO throws a pile of linker errors
 void GEFactory::initStatic() {
     lock_guard<mutex> lck(typeMtx);
-    registry.insert(pair<payloadType, CreatorFunction>(payloadType(PT_EMPTY_NODE), EmptyNode::create));
-    registry.insert(pair<payloadType, CreatorFunction>(payloadType(PT_EMPTY_DEDGE), EmptyDirEdge::create));
-    registry.insert(pair<payloadType, CreatorFunction>(payloadType(PT_EMPTY_UEDGE), EmptyUndirEdge::create));
+    registry.insert(pair<payloadType, CreatorFunction>(static_cast<payloadType>(PT_EMPTY_NODE), EmptyNode::create));
+    registry.insert(pair<payloadType, CreatorFunction>(static_cast<payloadType>(PT_EMPTY_DEDGE), EmptyDirEdge::create));
+    registry.insert(pair<payloadType, CreatorFunction>(static_cast<payloadType>(PT_EMPTY_UEDGE), EmptyUndirEdge::create));
 }
 
 payloadType GEFactory::reg(CreatorFunction classCreator) {
@@ -567,6 +691,3 @@ InitStatic::InitStatic() {
     FixedFieldIO::initStatic();
     GEFactory::initStatic();
 }
-
-// TODO does not run in debug1 - other library
-//InitStatic globalStaticInitializer;

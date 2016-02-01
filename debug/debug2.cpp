@@ -14,7 +14,7 @@ using namespace udbgraph;
 using namespace std;
 
 void UPS_CALLCONV udbgraphErrorHandler(int level, const char *message) {
-    cerr << level << ": " << message << endl;
+    cerr << "udbgraphErrorHandler: " << level << ": " << message << endl;
 }
 
 void notReady() {
@@ -43,13 +43,33 @@ void singleInsertCreate() {
 
 void singleInsertOpen() {
 	try {
-		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
+		shared_ptr<Database> db = Database::newInstance(1, 2, "debug2");
 		db->open("debug2a.udbg");
 		shared_ptr<GraphElem> node = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
 		db->write(node);
 	}
 	catch(exception &e) {
 		cout << "singleInsertOpen: " << e.what() << endl;
+	}
+}
+
+void verMismatch() {
+	try {
+		shared_ptr<Database> db = Database::newInstance(2, 1, "debug2");
+		db->open("debug2a.udbg");
+	}
+	catch(exception &e) {
+		cout << "verMismatch (expected): " << e.what() << endl;
+	}
+}
+
+void nameMismatch() {
+	try {
+		shared_ptr<Database> db = Database::newInstance(1, 1, "debug3");
+		db->open("debug2a.udbg");
+	}
+	catch(exception &e) {
+		cout << "nameMismatch (expected): " << e.what() << endl;
 	}
 }
 
@@ -117,7 +137,7 @@ void moreWritesPerTrans() {
 			Transaction tr = db->beginTrans(false);
 			shared_ptr<GraphElem> node = GEFactory::create(db, MoreWritesPerTrans::id());
 			MoreWritesPerTrans& pl = dynamic_cast<MoreWritesPerTrans&>(node->pl());
-			pl.fill(100);
+			pl.fill(1100);
 			db->write(node, tr);
 			pl.fill(8000);
 			node->write(tr);
@@ -162,6 +182,8 @@ int main(int argc, char** argv) {
 	notReady();
 	singleInsertCreate();
 	singleInsertOpen();
+	verMismatch();
+	nameMismatch();
 	moreWritesPerTrans();
     return 0;
 }

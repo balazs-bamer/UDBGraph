@@ -3,6 +3,7 @@ COPYRIGHT COMES HERE
 */
 
 #include<cstring>
+#include<algorithm>
 #include"serializer.h"
 
 #if USE_NVWA == 1
@@ -37,7 +38,6 @@ void FixedFieldIO::initStatic() noexcept {
     pos2sizes[RT_DEDGE][FPE_NODE_START] = pos2sizes[RT_UEDGE][FPE_NODE_START] = sizeof(keyType);
     pos2sizes[RT_DEDGE][FPE_NODE_END] = pos2sizes[RT_UEDGE][FPE_NODE_END] = sizeof(keyType);
     pos2sizes[RT_CONT][FPC_HEAD] = sizeof(keyType);
-    pos2sizes[RT_CONT][FPC_PREV] = sizeof(keyType);
 }
 
 void FixedFieldIO::setField(uint32_t fieldStart, uint64_t value, uint8_t * const array) {
@@ -87,8 +87,8 @@ uint64_t FixedFieldIO::getField(uint32_t fieldStart, uint8_t * const array) {
 
 void FixedFieldIO::checkPosition(uint32_t fieldStart, int recordType) {
     if(recordType >= RT_NOMORE || fieldStart > FIELD_VAR_MAX_POS) {
-        throw DebugException(string("Invalid record type (") + to_string(int(recordType)) +
-                          string(") or field position (") + to_string(fieldStart) +
+        throw DebugException(string("Invalid record type (") + to_string(static_cast<int>(recordType)) +
+                          string(") or field position (") + to_string(static_cast<int>(fieldStart)) +
                           string(") out of bounds.") );
     }
     uint32_t len = pos2sizes[recordType][fieldStart];
@@ -99,8 +99,8 @@ void FixedFieldIO::checkPosition(uint32_t fieldStart, int recordType) {
     case 8:
         return;
     case 0:
-        throw DebugException(string("Invalid position (") + to_string(int(fieldStart)) +
-                          string(") required for record type: ") + to_string(int(recordType)));
+        throw DebugException(string("Invalid position (") + to_string(static_cast<int>(fieldStart)) +
+                          string(") required for record type: ") + to_string(static_cast<int>(recordType)));
     default:
         throw DebugException(string("Invalid value in pos2sizes: ") + to_string(len));
     }
@@ -111,10 +111,16 @@ size_t RecordChain::Record::size = 0;
 constexpr uint32_t RecordChain::Record::recordVarStarts[RT_NOMORE];
 
 void RecordChain::Record::setSize(size_t s) {
-    if(s <= FIELD_VAR_MAX_POS || s > UDB_MAX_RECORD_SIZE) {
-        throw DebugException("Invalid record size.");
+#ifndef DEBUG
+    if(size == 0) {
+#endif
+        if(s <= FIELD_VAR_MAX_POS || s > UDB_MAX_RECORD_SIZE) {
+            throw DebugException("Invalid record size.");
+        }
+        size = s;
+#ifndef DEBUG
     }
-    size = s;
+#endif
 }
 
 
@@ -125,7 +131,7 @@ inline void RecordChain::Record::checkSize() {
 }
 
 RecordChain::Record::Record() :
-    record(new uint8_t[size]), index(0), key(keyType(KEY_INVALID)) {
+    record(new uint8_t[size]), index(0), key(static_cast<keyType>(KEY_INVALID)) {
     upsKey.flags = upsKey._flags = 0;
     upsKey.data = &key;
     upsKey.size = sizeof(key);
@@ -134,8 +140,20 @@ RecordChain::Record::Record() :
     upsRecord.data = nullptr;
 }
 
+RecordChain::Record::Record(keyType k, const uint8_t * const rec) :
+    record(new uint8_t[size]), index(0), key(k) {
+    upsKey.flags = upsKey._flags = 0;
+    upsKey.data = &key;
+    upsKey.size = sizeof(key);
+    upsRecord.flags = upsRecord.partial_offset = upsRecord.partial_size = 0;
+    upsRecord.size = 0;
+    upsRecord.data = nullptr;
+    memcpy(record, rec, size);
+    index = recordVarStarts[*record];
+}
+
 RecordChain::Record::Record(RecordType rt, payloadType pType) :
-    record(new uint8_t[size]), index(recordVarStarts[rt]), key(keyType(KEY_INVALID)) {
+    record(new uint8_t[size]), index(recordVarStarts[rt]), key(static_cast<keyType>(KEY_INVALID)) {
     upsKey.flags = upsKey._flags = 0;
     upsKey.data = &key;
     upsKey.size = sizeof(key);
@@ -170,7 +188,6 @@ void RecordChain::Record::clone(const Record &other) noexcept {
     memcpy(record, other.record, size);
 }
 
-
 inline bool RecordChain::Record::operator<<(const uint8_t byte) noexcept {
     if(index == size) {
         return false;
@@ -179,12 +196,26 @@ inline bool RecordChain::Record::operator<<(const uint8_t byte) noexcept {
     return true;
 }
 
+inline uint64_t RecordChain::Record::write(const char *cp, uint64_t len) noexcept {
+    uint64_t written = min(len, size - index);
+    strncpy(reinterpret_cast<char*>(record + index), cp, written);
+    index += written;
+    return written;
+}
+
 inline bool RecordChain::Record::operator>>(uint8_t &byte) noexcept {
     if(index == size) {
         return false;
     }
     byte = record[index++];
     return true;
+}
+
+inline uint64_t RecordChain::Record::read(char *cp, uint64_t len) noexcept {
+    uint64_t read = min(len, size - index);
+    strncpy(cp, reinterpret_cast<char*>(record + index), read);
+    index += read;
+    return read;
 }
 
 ups_status_t RecordChain::Record::read(ups_db_t *db, keyType k, ups_txn_t *tr) noexcept {
@@ -216,6 +247,15 @@ RecordChain::RecordChain(RecordType rt, payloadType pt) : pType(pt) {
     state = RCState::EMPTY;
     content.push_back(Record(rt, pt));
     iter = content.begin();
+}
+
+void RecordChain::setHead(keyType key, const uint8_t * const rec) {
+    content.clear();
+    Record record(key, rec);
+    pType = record.getField(FP_PAYLOADTYPE);
+    content.push_back(move(record));
+    iter = content.begin();
+    state = RCState::HEAD;
 }
 
 void RecordChain::clone(const RecordChain &other) {
@@ -280,6 +320,10 @@ deque<keyType> RecordChain::getKeys() const {
         keys.push_back(rec.getKey());
     }
     return keys;
+}
+
+void RecordChain::addEdge(keyType edgeKey, FieldPosNode where, ups_txn_t *tr) {
+// TODO implement
 }
 
 void RecordChain::stripLeftover() {
@@ -400,22 +444,13 @@ void RecordChain::write(deque<keyType> &oldKeys, keyType key, ups_txn_t *tr) {
         // first construct the double linked list
         auto newStart = itThis;
         auto itPrev = itThis;
-        auto itNext = itThis;
-        itNext++; // definitely exists
         if(itPrev != content.begin()) {
             itPrev--; // if it equals to itThis there is no previous
-            itThis->setField(FPC_PREV, itPrev->getKey());
         }
         while(itThis != content.end()) {
-            if(itThis != newStart) {
-                itThis->setKey(newKey = keyGen->nextKey());
-            }
+            itThis->setKey(newKey = keyGen->nextKey());
             if(itThis != content.begin()) {
                 itThis->setField(FPC_HEAD, key);
-            }
-            if(itNext != content.end()) {
-                itNext->setField(FPC_PREV, newKey);
-                itNext++;
             }
             if(itPrev != itThis) {
                 itPrev->setField(FP_NEXT, newKey);
@@ -462,15 +497,23 @@ void RecordChain::write(uint8_t b) {
     if(state == RCState::EMPTY) {
         state = RCState::FULL;
     }
-    if(iter == content.end()) {
-        content.push_back(Record(RT_CONT, pType));
-        iter = content.begin();
-    }
     if(!(*iter << b)) {
         content.push_back(Record(RT_CONT, pType));
         iter++;
         *iter << b;
     }
+}
+
+void RecordChain::write(const char *cp, uint64_t len) {
+    do {
+        uint64_t written = iter->write(cp, len);
+        if(written < len) {
+            content.push_back(Record(RT_CONT, pType));
+            iter++;
+        }
+        len -= written;
+        cp += written;
+    } while(len > 0);
 }
 
 void RecordChain::read(uint8_t &b) {
@@ -486,24 +529,37 @@ void RecordChain::read(uint8_t &b) {
     throw DebugException("No more data in RecordChain to read.");
 }
 
-Converter& Converter::write(const char * const p) {
-    uint64_t len = strlen(p);
-    *this << len;
-    uint64_t i = 0;
-    while(p[i]) {
-        chain.write(uint8_t(p[i++]));
-    }
-    return *this;
+void RecordChain::read(char *cp, uint64_t len) {
+    do {
+        if(iter == content.end()) {
+            throw DebugException("No more data in RecordChain to read.");
+        }
+        uint64_t read = iter->read(cp, len);
+        if(read < len) {
+            iter++;
+        }
+        len -= read;
+        cp += read;
+    } while(len > 0);
+    *cp = 0;
 }
 
-Converter& Converter::operator<<(const string &s) {
-    uint64_t len = s.size();
-    *this << len;
-    const char *p = s.c_str();
-    while(*p) {
-        chain.write(uint8_t(*p++));
-    }
-    return *this;
+void RecordChain::read(string &s, uint64_t len) {
+    char *cp = new char[Record::getSize() + 1];
+    do {
+        if(iter == content.end()) {
+            delete[] cp;
+            throw DebugException("No more data in RecordChain to read.");
+        }
+        uint64_t read = iter->read(cp, len);
+        cp[read] = 0;
+        if(read < len) {
+            iter++;
+        }
+        len -= read;
+        s += cp;
+    } while(len > 0);
+    delete[] cp;
 }
 
 Converter& Converter::operator>>(int8_t& b) {
@@ -524,12 +580,7 @@ Converter& Converter::operator>>(char *&p) {
     uint64_t len;
     *this >> len;
     char *tp = p = new char[len + 1];
-    while(len--) {
-        uint8_t t;
-        chain.read(t);
-        *tp++ = char(t);
-    }
-    *tp = 0;
+    chain.read(tp, len);
     return *this;
 }
 
@@ -537,11 +588,14 @@ Converter& Converter::operator>>(string &s) {
     uint64_t len;
     *this >> len;
     s.reserve(len);
-    while(len--) {
-        uint8_t t;
-        chain.read(t);
-        // TODO check if efficient
-        s += char(t);
-    }
+    chain.read(s, len);
     return *this;
 }
+
+Converter& Converter::write(const char * const p) {
+    uint64_t len = strlen(p);
+    *this << len;
+    chain.write(const_cast<const char *>(p), len);
+    return *this;
+}
+

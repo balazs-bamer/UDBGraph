@@ -87,12 +87,11 @@ namespace udbgraph {
     };
 
     /** Continued fixed field positions in byte. Records of a GraphElem form
-    a double linked list to enhance the possibility of cleanup in case of an application
+    a linked list to enhance the possibility of cleanup in case of an application
     crash or power outage. */
     enum FieldPosCont {
-        FPC_HEAD = FP_PAYLOADTYPE + sizeof(payloadType),
-        FPC_PREV = FPC_HEAD + sizeof(keyType),
-        FPC_VAR = FPC_PREV + sizeof(keyType)	// 32
+        FPC_HEAD = FP_VAR,
+        FPC_VAR = FPC_HEAD + sizeof(keyType)	// 32
     };
 
     /** Special key values. */
@@ -125,7 +124,7 @@ namespace udbgraph {
         FULL
     };
 
-#define MAXMACRO(x,y) ((int(x))>(int(y))?(int(x)):(int(y)))
+#define MAXMACRO(x,y) ((static_cast<int>(x))>(static_cast<int>(y))?(static_cast<int>(x)):(static_cast<int>(y)))
 #define FIELD_VAR_MAX_POS MAXMACRO(MAXMACRO(MAXMACRO(FPN_VAR,FPR_VAR),MAXMACRO(FPE_VAR,FPC_VAR)),FPA_VAR)
 
     /** Common base class for classes performing UpscaleDB operations. */
@@ -189,7 +188,7 @@ namespace udbgraph {
 			int index;
 
             /** Key in UpscaleDB if already persisted. */
-            keyType key = keyType(KEY_INVALID);
+            keyType key = static_cast<keyType>(KEY_INVALID);
 
             /** Structure to use in UpscaleDB, its data field points to key. */
             ups_key_t upsKey;
@@ -218,9 +217,8 @@ namespace udbgraph {
              * UpscaleDB record size. */
             Record(RecordType rt, payloadType pType);
 
-            /* Constructs a new record with prefilled byte array content.
-            Record(uint8_t * const content, keyType key) :
-                record(content), index(0), key(key) {}*/
+            /** Constructs a new head record using the raw read data. */
+            Record(keyType k, const uint8_t * const rec);
 
             /** Destructor deletes the in-memory byte array. */
 			~Record() { delete[] record; }
@@ -247,7 +245,7 @@ namespace udbgraph {
             keyType getKey() const { return key; }
 
             /** Sets the key. */
-            void setKey(keyType k) { if(key == keyType(KEY_INVALID)) { key = k; } }
+            void setKey(keyType k) { if(key == static_cast<keyType>(KEY_INVALID)) { key = k; } }
 
             /** Sets the fixed field starting at fieldStart to the needed value,
              * considering the actual record type using FixedFieldIO::setField. */
@@ -265,11 +263,41 @@ namespace udbgraph {
              * success, false if the record was full. */
             bool operator<<(const uint8_t byte) noexcept;
 
+            /** Reads this type if it fits in the record. Returns true if succeeded. */
+            template<typename T>
+            bool read(T &t) {
+                if(size - index >= sizeof(t)) {
+                    t = *(reinterpret_cast<T*>(record + index));
+                    index += sizeof(t);
+                    return true;
+                }
+                return false;
+            }
+
+            /** Writes (a part of the) character string into the record considering
+             * its length. Returns the actually written length. */
+            uint64_t write(const char *cp, uint64_t len) noexcept;
+
             /** Gets a byte from the record without knowing if
              * there is real content to read or we exceed
              * the amount of data once stored. Returns true
              * if the index was less than the record size. */
             bool operator>>(uint8_t &byte) noexcept;
+
+            /** Writes this type if it fits in the record. Returns true if succeeded. */
+            template<typename T>
+            bool write(T t) {
+                if(size - index >= sizeof(t)) {
+                    *(reinterpret_cast<T*>(record + index)) = t;
+                    index += sizeof(t);
+                    return true;
+                }
+                return false;
+            }
+
+            /** Reads (a part of the) character string from the record considering
+             * its length. Returns the actually read length. */
+            uint64_t read(char *cp, uint64_t len) noexcept;
 
             /** Read the record from db using the transaction. Calls check
              * if status was not UPS_KEY_NOT_FOUND, otherwise returns it and let the
@@ -324,6 +352,9 @@ namespace udbgraph {
         /** Sets keyGen if not set yet. */
         void setKeyGen(KeyGenerator<keyType> *kg) { if(keyGen == nullptr) keyGen = kg; }
 
+        /** Clears the old contents, sets the head record and all related fields. */
+        void setHead(keyType k, const uint8_t * const record);
+
         /** Clones the other instance here. Changes are already committed in UpscaleDB,
         or aborted, so no records are written now.*/
         void clone(const RecordChain &other);
@@ -349,6 +380,11 @@ namespace udbgraph {
         /** Gathers the old keys from content. */
         std::deque<keyType> getKeys() const;
 
+        /* Adds an edge to the indicated array and writes the changed records
+         * to disk. If there was no more free space in the free array, inserts a
+         * new record. */
+        void addEdge(keyType edgeKey, FieldPosNode where, ups_txn_t *tr);
+
         /** Removes all records after the one pointed by iter. */
         void stripLeftover();
 
@@ -370,8 +406,26 @@ namespace udbgraph {
         /** Implementation: assembles a byte. */
         void write(uint8_t b);
 
+        /** Writes this type if it fits in the record. Returns true if succeeded. */
+        template<typename T>
+        bool write(T t) { return iter->write(t); }
+
+        /** Writes a character string using its length info to prevent calculating
+         * it again. */
+        void write(const char *cp, uint64_t len);
+
         /** Implementation: extracts a byte. */
         void read(uint8_t &b);
+
+        /** Reads this type if it fits in the record. Returns true if succeeded. */
+        template<typename T>
+        bool read(T &t) { return iter->read(t); }
+
+        /** Reads a character string using its length info. */
+        void read(char *cp, uint64_t len);
+
+        /** Reads a character string using its length info. */
+        void read(std::string &s, uint64_t len);
     };
 
     /** A wrapper class for RecordChain to hide unnecessary parts from Payload providing
@@ -390,28 +444,6 @@ namespace udbgraph {
             return *this;
         }
 
-        /** Record assembly: guarantees signed and unsigned 8-64 bit native integers, float, double
-        Stores everyting as little endian.*/
-        template<typename T>
-        Converter& operator<<(const T t) {
-            union {
-                T orig;
-                uint8_t bytes[sizeof(T)];
-            };
-            orig = t;
-            if(EndianInfo::isLittle()) {
-                for(int i = 0; i < sizeof(T); i++) {
-                    chain.write(bytes[i]);
-                }
-            }
-            else {
-                for(int i = sizeof(T) - 1; i >= 0; i--) {
-                    chain.write(bytes[i]);
-                }
-            }
-            return *this;
-        }
-
         /** Record assembly: stores a byte. */
         Converter& operator<<(int8_t b) {
             chain.write(uint8_t(b));
@@ -424,58 +456,52 @@ namespace udbgraph {
             return *this;
         }
 
-        /** Record assembly: stores a 0-delimited char array and first its length
-         * as uint64_t. It is needed because the reader allocates memory for stuff read.*/
-        Converter& write(const char * const p);
+        /** Record assembly: stores an int. */
+        Converter& operator<<(int16_t b) { return writeNative(b); }
+
+        /** Record assembly: stores an int. */
+        Converter& operator<<(int32_t b) { return writeNative(b); }
+
+        /** Record assembly: stores an int. */
+        Converter& operator<<(int64_t b) { return writeNative(b); }
+
+        /** Record assembly: stores an int. */
+        Converter& operator<<(uint16_t b) { return writeNative(b); }
+
+        /** Record assembly: stores an int. */
+        Converter& operator<<(uint32_t b) { return writeNative(b); }
+
+        /** Record assembly: stores an int. */
+        Converter& operator<<(uint64_t b) { return writeNative(b); }
+
+        /** Record assembly: stores a float. */
+        Converter& operator<<(float b) { return writeNative(b); }
+
+        /** Record assembly: stores a double. */
+        Converter& operator<<(double b) { return writeNative(b); }
+
+        /** Record assembly: stores a long double. */
+        Converter& operator<<(long double b) { return writeNative(b); }
 
         /** Record assembly: stores a 0-delimited char array and first its length
          * as uint64_t. It is needed because the reader allocates memory for stuff read.*/
-        Converter& operator<<(const char * const p) {
-            return write(p);
-        }
+        Converter& operator<<(const char * const p) { return write(p); }
 
         /** Record assembly: stores a 0-delimited char array and first its length
          * as uint64_t. It is needed because the reader allocates memory for stuff read.*/
-        Converter& operator<<(char *p) {
-            return write(const_cast<char *>(p));
-        }
+        Converter& operator<<(char *p) { return write(const_cast<char *>(p)); }
 
         /** Record assembly: stores a string and first its length
          * as uint64_t. It is needed because the reader allocates memory for stuff read.*/
-        Converter& operator<<(const std::string &s);
+        Converter& operator<<(const std::string &s) { return write(s.c_str()); }
 
         /** Record assembly: stores a string and first its length
          * as uint64_t. It is needed because the reader allocates memory for stuff read.*/
-        Converter& operator<<(std::string &s) {
-            return *this << const_cast<const std::string &>(s);
-        }
+        Converter& operator<<(std::string &s) { return write(s.c_str()); }
 
         /** Extracts a byte from the actual record. */
         Converter& operator>>(uint8_t &b) {
             chain.read(b);
-            return *this;
-        }
-
-        /** Extracts a byte from the actual record.
-         * Guarantees signed and unsigned 8-64 bit integers, float, double
-        Reads everyting as little endian.*/
-        template<typename T>
-        Converter& operator>>(T& t) {
-            union {
-                T orig;
-                uint8_t bytes[sizeof(T)];
-            };
-            if(EndianInfo::isLittle()) {
-                for(int i = 0; i < sizeof(T); i++) {
-                    chain.read(bytes[i]);
-                }
-            }
-            else {
-                for(int i = sizeof(T) - 1; i >= 0; i--) {
-                    chain.read(bytes[i]);
-                }
-            }
-            t = orig;
             return *this;
         }
 
@@ -485,6 +511,33 @@ namespace udbgraph {
         /** Extracts a byte as bool from the actual record. */
         Converter& operator>>(bool &b);
 
+        /** Extracts an int from the actual record. */
+        Converter& operator>>(int16_t &b) { return readNative(b); }
+
+        /** Extracts an int from the actual record. */
+        Converter& operator>>(int32_t &b) { return readNative(b); }
+
+        /** Extracts an int from the actual record. */
+        Converter& operator>>(int64_t &b) { return readNative(b); }
+
+        /** Extracts an int from the actual record. */
+        Converter& operator>>(uint16_t &b) { return readNative(b); }
+
+        /** Extracts an int from the actual record. */
+        Converter& operator>>(uint32_t &b) { return readNative(b); }
+
+        /** Extracts an int from the actual record. */
+        Converter& operator>>(uint64_t &b) { return readNative(b); }
+
+        /** Extracts a float from the actual record. */
+        Converter& operator>>(float &b) { return readNative(b); }
+
+        /** Extracts a double from the actual record. */
+        Converter& operator>>(double &b) { return readNative(b); }
+
+        /** Extracts a long double from the actual record. */
+        Converter& operator>>(long double &b) { return readNative(b); }
+
         /** Extracts a 0-delimited character array.
          * Based on the stored length, allocates memory first, so it must be deleted after use. */
         Converter& operator>>(char *&p);
@@ -492,6 +545,62 @@ namespace udbgraph {
         /** Extracts a string.
          * Based on the stored length, allocates memory first. */
         Converter& operator>>(std::string &s);
+
+    protected:
+        /** Writes the value into the record. If the architecture is little-endian,
+         * it performs the write using direct cast if there is enough space in the
+         * record. */
+        template<typename T>
+        Converter& writeNative(const T t) {
+            union {
+                T orig;
+                uint8_t bytes[sizeof(T)];
+            };
+            orig = t;
+            if(EndianInfo::isLittle()) {
+                if(!chain.write(t)) {
+                    for(int i = 0; i < sizeof(T); i++) {
+                        chain.write(bytes[i]);
+                    }
+                }
+            }
+            else {
+                for(int i = sizeof(T) - 1; i >= 0; i--) {
+                    chain.write(bytes[i]);
+                }
+            }
+            return *this;
+        }
+
+        /** Record assembly: stores a 0-delimited char array and first its length
+         * as uint64_t. It is needed because the reader allocates memory for stuff read.*/
+        Converter& write(const char * const p);
+
+        /** Extracts a byte from records. If the architecture is little-endian
+         * and the value fits the record without overlapping into the next one,
+         * it is read using direct cast. */
+        template<typename T>
+        Converter& readNative(T& t) {
+            union {
+                T orig;
+                uint8_t bytes[sizeof(T)];
+            };
+            if(EndianInfo::isLittle()) {
+                if(!chain.read(t)) {
+                    for(int i = 0; i < sizeof(T); i++) {
+                        chain.read(bytes[i]);
+                    }
+                    t = orig;
+                }
+            }
+            else {
+                for(int i = sizeof(T) - 1; i >= 0; i--) {
+                    chain.read(bytes[i]);
+                }
+                t = orig;
+            }
+            return *this;
+        }
     };
 }
 

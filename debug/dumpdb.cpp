@@ -215,8 +215,6 @@ void Dump::Record::printEdge() const {
 
 void Dump::Record::printCont() const {
     print("head", FPC_HEAD);
-    print("prev", FPC_PREV);
-
 }
 
 Dump::Dump(const char * const name) {

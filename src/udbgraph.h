@@ -70,6 +70,7 @@ namespace udbgraph {
         PP
     };
 
+    /** Returns string representations of the states for debugging. */
     std::string toString(GEState s);
 
     /** Empty payload types for graph elems Node, DirEdge, UndirEdge. PT_NOMORE means
@@ -276,18 +277,25 @@ namespace udbgraph {
         /** Checks ACL for the given elem. Now only checks if the ACL key is ACL_FREE. */
         void checkACL(std::shared_ptr<GraphElem> &ge, Transaction &tr) const;
 
-        /* Checks ACL for all elems. If the elems are registered here, check is
+        /** Checks ACL for all elems. If the elems are registered here, check is
          * done using this, otherwise it reads them partially to reach the ACL key.
          * Registration is needed anyway. This function call does not alter anything
          * in the registration structures until all checks are finished.
         @param toCheck list of keys to possible register and whose ACL is to be checked.
         @param foundLockedElems iterator to the map containing the locked elems for the transaction.
         @param tr the current transaction.
-        TODO finish method. */
-        void checkACLandRegister(std::deque<keyType> &toCheck, transLockedElemsMapType::iterator &foundLockedElems, Transaction &tr);
+        @returns the GraphElems corresponding to the keys in toCheck. */
+        std::deque<std::shared_ptr<GraphElem>> checkACLandRegister(std::deque<keyType> &toCheck, transLockedElemsMapType::iterator &foundLockedElems, Transaction &tr);
 
         /** Registers the elem in the appropriate structures. */
         void registerElem(std::shared_ptr<GraphElem> &ge, transLockedElemsMapType::iterator &foundLockedElems, Transaction &tr);
+
+        /** Reads the graph elem identified by the key known to be missing from the
+         * registry to the given record chain level. */
+        std::shared_ptr<GraphElem> doBareRead(keyType key, RCState level, ups_txn_t *upsTr);
+
+        /** Reads the graph elem identified by the key to the given record chain level. */
+        std::shared_ptr<GraphElem> doRead(keyType key, Transaction &tr, RCState level);
 
         /** Performs actual write. */
         void doWrite(std::shared_ptr<GraphElem> &ge, Transaction &tr);
@@ -403,10 +411,10 @@ namespace udbgraph {
         /** Key for the first record of this elem. An elem gets a real key only when
         it is about to be written in DB. The GEFactory creation mechanism is too
         early in time for that. */
-        keyType key = keyType(KEY_INVALID);
+        keyType key = static_cast<keyType>(KEY_INVALID);
 
         /** ACL key, now set to ACL_FREE. */
-        keyType aclKey = keyType(ACL_FREE);
+        keyType aclKey = static_cast<keyType>(ACL_FREE);
 
         /** The original record chain of this object. It is empty if the object
          * did not exist before the transaction, filled if it existed, and is
@@ -459,11 +467,6 @@ namespace udbgraph {
         type and accessed there. */
         Payload& pl();
 
-        /** Throws IllegalMethodException, works only for edges. */
-        virtual void setEnds(std::shared_ptr<GraphElem> &start, std::shared_ptr<GraphElem> &end) {
-            throw IllegalMethodException("Can't set ends on node.");
-        }
-
         /** Convenience wrapper for elems registered in Database. */
         void write() { db.lock()->write(key); }
 
@@ -471,6 +474,9 @@ namespace udbgraph {
         void write(Transaction &tr) { db.lock()->write(key, tr); }
 
 protected:
+        /** Sets key, the head record and deletes the rest. */
+        virtual void setHead(keyType key, const uint8_t * const record);
+
         /** Writes the fixed fields into chainNew. Here does nothing. */
         virtual void writeFixed();
 
@@ -481,6 +487,9 @@ protected:
          * Here it returns nothing as nodes can always be written.*/
         virtual std::deque<keyType> getConnectedElemsBeforeWrite() { std::deque<keyType> l; return l; }
 
+        /** Checks state if the elem is suitable for writing and throws exception if not. */
+        void checkBeforeWrite();
+
 // ----------- state transition functions ------------
 
         /** Tries to read the record chain to the given level using the stored key,
@@ -489,7 +498,7 @@ protected:
         void read(ups_txn_t *tr, RCState level);
 
         /** Performs actual insert/update after serializing this. */
-        virtual void write(ups_txn_t *tr);
+        virtual void write(std::deque<std::shared_ptr<GraphElem>> &connected, ups_txn_t *tr);
 
         /** Sets the new state, updates payload, chainOrig and chainNew after
         according to te's value (ABORT or COMMIT). */
@@ -504,6 +513,11 @@ protected:
     protected:
         /** Cannot be instantiated. . */
         AbstractNode(std::shared_ptr<Database> d, RecordType rt, std::unique_ptr<Payload> pl) : GraphElem(d, rt, std::move(pl)) {}
+
+        void addEdge(keyType key, FieldPosNode where, ups_txn_t *tr);
+
+        friend class DirEdge;
+        friend class UndirEdge;
     };
 
     /** A general node class represents actual node types in the graph. */
@@ -540,11 +554,17 @@ protected:
         Root(std::shared_ptr<Database> d, uint32_t vmaj, uint32_t vmin, std::string name);
 
     public:
-        friend void Database::create(const char *filename, uint32_t mode, size_t recordSize);
+        bool doesMatch(uint32_t verMajor, uint32_t verMinor, std::string appName);
 
     protected:
+        /** Sets key, the head record and deletes the rest. Extracts version info
+        and appName from head record. */
+        virtual void setHead(keyType key, const uint8_t * const record);
+
         /** Writes the fixed fields into chainNew. */
         virtual void writeFixed();
+
+        friend class Database;
     };
 
     /** Abstract edge class, common ancestor of DirEdge and UndirEdge. not intended for subclassing. */
@@ -558,15 +578,12 @@ protected:
          * set yet. Arguments must represent nodes. For undirected edges, start
          * and end order does not matter. If the arguments are edges, their key
         is invalid or the ends are already set, the method throws exception. */
-        virtual void setEnds(std::shared_ptr<GraphElem> &start, std::shared_ptr<GraphElem> &end);
+        void setEnds(std::shared_ptr<GraphElem> &start, std::shared_ptr<GraphElem> &end);
 
     protected:
-        /** Here it returns the two endpoints if state is NND, otherwise nothing. */
+        /** Here it returns the two endpoints if state is DU, otherwise nothing.
+        The queue always has the start point at the first place. */
         virtual std::deque<keyType> getConnectedElemsBeforeWrite();
-
-        /** Performs actual insert/update after serializing this, including updateing ends
-        for brand-new edge. */
-        virtual void write(ups_txn_t *tr);
 
     };
 
@@ -580,6 +597,10 @@ protected:
     protected:
         /** Writes the fixed fields into chainNew. Here does nothing. */
         virtual void writeFixed() {}
+
+        /** Performs actual insert/update after serializing this, including updating ends
+        for brand-new edge. */
+        virtual void write(std::deque<std::shared_ptr<GraphElem>> &connected, ups_txn_t *tr);
     };
 
     /** A general directed edge class represents the actual undirected edge types in
@@ -592,6 +613,10 @@ protected:
     protected:
         /** Writes the fixed fields into chainNew. Here does nothing. */
         virtual void writeFixed() {}
+
+        /** Performs actual insert/update after serializing this, including updating ends
+        for brand-new edge. */
+        virtual void write(std::deque<std::shared_ptr<GraphElem>> &connected, ups_txn_t *tr);
     };
 
     /** A class for producing GraphElem subclasses. It is able to create Node, DirEdge
@@ -660,7 +685,7 @@ protected:
     shared_ptr<GraphElem> node = GEFactory::create(db, SamplePayload::id());
 
     While an empty node can be created using:
-    shared_ptr<GraphElem> node = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
+    shared_ptr<GraphElem> node = GEFactory::create(db, static_cast<payloadType>(PT_EMPTY_NODE));
     */
     class GEFactory final {
         /** Creator method type in GraphElem subclasses. */
@@ -696,7 +721,7 @@ protected:
         EmptyNode(payloadType pt) : Payload(pt) {}
 
         /** Static PayloadType ID for GEFactory. */
-        static payloadType id() { return payloadType(PT_EMPTY_NODE); }
+        static payloadType id() { return static_cast<payloadType>(PT_EMPTY_NODE); }
 
         /** Used in GEFactory to create a shared_ptr holding a new class instance. */
         static std::shared_ptr<GraphElem> create(std::shared_ptr<Database> db, payloadType pt) {
@@ -711,7 +736,7 @@ protected:
         EmptyDirEdge(payloadType pt) : Payload(pt) {}
 
         /** Static PayloadType ID for GEFactory. */
-        static payloadType id() { return payloadType(PT_EMPTY_DEDGE); }
+        static payloadType id() { return static_cast<payloadType>(PT_EMPTY_DEDGE); }
 
         /** Used in GEFactory to create a shared_ptr holding a new class instance. */
         static std::shared_ptr<GraphElem> create(std::shared_ptr<Database> db, payloadType pt) {
@@ -726,7 +751,7 @@ protected:
         EmptyUndirEdge(payloadType pt) : Payload(pt) {}
 
         /** Static PayloadType ID for GEFactory. */
-        static payloadType id() { return payloadType(PT_EMPTY_UEDGE); }
+        static payloadType id() { return static_cast<payloadType>(PT_EMPTY_UEDGE); }
 
         /** Used in GEFactory to create a shared_ptr holding a new class instance. */
         static std::shared_ptr<GraphElem> create(std::shared_ptr<Database> db, payloadType pt) {

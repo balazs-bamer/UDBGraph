@@ -66,6 +66,8 @@ I have aimed serializable transaction isolation. Any number of transactions may 
 
 ### Architecture
 
+Currently the library uses some static fields and methods, which limit the use of databases of different types and record sizes in the same application. Minor changes would eliminate this restrictions. Later during development I will think about it, but currently this design is enough for me.
+
 A main point in architecture design was to separate database management from the attributes stored in edges and nodes. I call the collection of attributes for a particular type of graph element *payload*, which may be an almost arbitrary user-defined object.
 
 As payload types are implemented with classes, each node and edge has a determined type, which affects its attributes, but not the behaviour during graph management. It is independent of the payload.

@@ -81,6 +81,7 @@ void BaseException::appendBacktrace() noexcept {
 }
 
 void BaseException::makeDescr(const char * const name, const char * const cause) noexcept {
+    *descr = 0;
     append(name);
     append(": ");
     append(cause);
