@@ -263,15 +263,18 @@ namespace udbgraph {
              * success, false if the record was full. */
             bool operator<<(const uint8_t byte) noexcept;
 
-            /** Reads this type if it fits in the record. Returns true if succeeded. */
+            /** Reads this type if it fits in the record.
+             * @return the number of bytes read, or could have been read if
+             * less than sizeof(t). */
             template<typename T>
-            bool read(T &t) {
-                if(size - index >= sizeof(t)) {
+            size_t read(T &t) {
+                size_t remaining = size - index;
+                if(remaining >= sizeof(t)) {
                     t = *(reinterpret_cast<T*>(record + index));
                     index += sizeof(t);
-                    return true;
+                    return sizeof(t);
                 }
-                return false;
+                return remaining;
             }
 
             /** Writes (a part of the) character string into the record considering
@@ -284,15 +287,18 @@ namespace udbgraph {
              * if the index was less than the record size. */
             bool operator>>(uint8_t &byte) noexcept;
 
-            /** Writes this type if it fits in the record. Returns true if succeeded. */
+            /** Writes this type if it fits in the record.
+             * @return the number of bytes read, or could have been read if
+             * less than sizeof(t). */
             template<typename T>
-            bool write(T t) {
-                if(size - index >= sizeof(t)) {
+            size_t write(T t) {
+                size_t remaining = size - index;
+                if(remaining >= sizeof(t)) {
                     *(reinterpret_cast<T*>(record + index)) = t;
                     index += sizeof(t);
-                    return true;
+                    return sizeof(t);
                 }
-                return false;
+                return remaining;
             }
 
             /** Reads (a part of the) character string from the record considering
@@ -408,7 +414,23 @@ namespace udbgraph {
 
         /** Writes this type if it fits in the record. Returns true if succeeded. */
         template<typename T>
-        bool write(T t) { return iter->write(t); }
+        bool write(T t) {
+            size_t written = iter->write(t);
+            if(written == sizeof(t)) {
+                return true;
+            }
+            else {
+                if(written == 0) {
+                    content.push_back(Record(RT_CONT, pType));
+                    iter++;
+                    iter->write(t);
+                    return true;
+                }
+                else {
+                    return false;
+                }
+            }
+        }
 
         /** Writes a character string using its length info to prevent calculating
          * it again. */
@@ -419,7 +441,25 @@ namespace udbgraph {
 
         /** Reads this type if it fits in the record. Returns true if succeeded. */
         template<typename T>
-        bool read(T &t) { return iter->read(t); }
+        bool read(T &t) {
+            size_t read = iter->read(t);
+            if(read == sizeof(t)) {
+                return true;
+            }
+            else {
+                if(read == 0) {
+                    iter++;
+                    if(iter == content.end()) {
+                        throw DebugException("No more data in RecordChain to read.");
+                    }
+                    iter->read(t);
+                    return true;
+                }
+                else {
+                    return false;
+                }
+            }
+        }
 
         /** Reads a character string using its length info. */
         void read(char *cp, uint64_t len);
@@ -435,7 +475,15 @@ namespace udbgraph {
         /** The RecordChain we wrap. */
         RecordChain &chain;
 
+        /** True if unaligned memory access is enabled. */
+        static bool allowUnalign;
+
     public:
+        /** Enables unaligned memory access. During record (dis)assembly.
+         * Disabled by default. Enabling this on architectures not supporting
+         * it will cause bus errors and program termination. */
+        static void enableUnalign() { allowUnalign = true; }
+
         Converter(RecordChain &s) : chain(s) {}
 
         /** Record assembly: stores a byte. */
@@ -556,15 +604,16 @@ namespace udbgraph {
                 T orig;
                 uint8_t bytes[sizeof(T)];
             };
-            orig = t;
             if(EndianInfo::isLittle()) {
-                if(!chain.write(t)) {
+                if(!allowUnalign || !chain.write(t)) {
+                    orig = t;
                     for(int i = 0; i < sizeof(T); i++) {
                         chain.write(bytes[i]);
                     }
                 }
             }
             else {
+                orig = t;
                 for(int i = sizeof(T) - 1; i >= 0; i--) {
                     chain.write(bytes[i]);
                 }
@@ -586,7 +635,7 @@ namespace udbgraph {
                 uint8_t bytes[sizeof(T)];
             };
             if(EndianInfo::isLittle()) {
-                if(!chain.read(t)) {
+                if(!allowUnalign || !chain.read(t)) {
                     for(int i = 0; i < sizeof(T); i++) {
                         chain.read(bytes[i]);
                     }

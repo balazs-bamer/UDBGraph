@@ -562,6 +562,8 @@ void RecordChain::read(string &s, uint64_t len) {
     delete[] cp;
 }
 
+bool Converter::allowUnalign = false;
+
 Converter& Converter::operator>>(int8_t& b) {
     uint8_t t;
     chain.read(t);

@@ -135,6 +135,39 @@ void serializeInplace(int offset) {
     
 }
 
+void testAlign(int pad, uint64_t count) {
+    RecordChain ser(RT_NODE, 4);
+	Converter conv(ser);
+	uint8_t p = 1;
+	for(int i = 0; i < pad; i++) {
+		conv << p;
+	}
+	for(uint64_t i = 0; i < count; i++) {
+		conv << i;
+	}
+	ser.reset();
+	for(int i = 0; i < pad; i++) {
+		conv >> p;
+	}
+	for(uint64_t i = 0; i < count; i++) {
+		uint64_t res;
+		conv >> res;
+		if(res != i) {
+			cout << "Alignment problem at pad " << pad << '\n';
+		}
+	}
+}
+
+void testAlignment() {
+	for(int i = 0; i < 8; i++) {
+		testAlign(i, 1000);
+	}
+	Converter::enableUnalign();
+	for(int i = 0; i < 8; i++) {
+		testAlign(i, 1000);
+	}
+}
+
 void testCounterMap() {
 	CounterMap<keyType, countType> cnt;
 	cnt.inc(1);
@@ -311,6 +344,7 @@ int main(int argc, char** argv) {
     serializeInplace(2000);
     serializeInplace(3000);
 	testCounterMap();
+	testAlignment();
 //	loadsave(int edges, int payLen, bool readOnce, int recordSize) {
 	loadsave(-1, 0, true, 1024);
 	loadsave(0, 0, true, 1024);

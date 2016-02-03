@@ -115,6 +115,8 @@ Each record has a set of fixed field on its beginning. For node records, the edg
 
 Everything inside the records is stored as little-endian for database portability. However, the UpscaleDB tree information is stored in host-endian, so an additional UpscaleDB utility is needed to transfer the database between machines with different endian.
 
+The *Converter* class can serialize and deserialize native types only bytewise on big-endian architectures. On little-endian architectures it uses bytewise operation by default, but calling *Converter::enableUnalign()* enables unaligned pointer cast at the actual record index to speedup operation. Note, this generates bus error and program termination on architectures not supporting it.
+
 Record types used in UDBGraph are:
 
 Type		 |Description
