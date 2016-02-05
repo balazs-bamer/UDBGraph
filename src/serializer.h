@@ -52,17 +52,22 @@ namespace udbgraph {
         FP_RECORDTYPE, FP_LOCK, FP_RES1, FP_RES2,
         FP_ACL,
         FP_NEXT = FP_ACL + sizeof(keyType),
-        FP_PAYLOADTYPE = FP_NEXT + sizeof(keyType),	// 12
-        FP_VAR = FP_PAYLOADTYPE + sizeof(payloadType)
+        FP_PAYLOADTYPE = FP_NEXT + sizeof(keyType),
+        FP_VAR = FP_PAYLOADTYPE + sizeof(payloadType) // 24
     };
 
     /** Node fixed field positions in byte, part of root. */
     enum FieldPosNode {
-        FPN_CNT_INEDGE = FP_VAR,
-        FPN_CNT_OUTEDGE = FPN_CNT_INEDGE + sizeof(countType),
-        FPN_CNT_UNEDGE = FPN_CNT_OUTEDGE + sizeof(countType),
-        FPN_CNT_FREDGE = FPN_CNT_UNEDGE + sizeof(countType),
-        FPN_VAR = FPN_CNT_FREDGE + sizeof(countType)	// 32
+        FPN_IN_BUCKETS = FP_VAR,
+        FPN_IN_USED = FPN_IN_BUCKETS + sizeof(countType),
+        FPN_IN_DELETED = FPN_IN_USED + sizeof(countType),
+        FPN_OUT_BUCKETS = FPN_IN_DELETED + sizeof(countType),
+        FPN_OUT_USED = FPN_OUT_BUCKETS + sizeof(countType),
+        FPN_OUT_DELETED = FPN_OUT_USED + sizeof(countType),
+        FPN_UN_BUCKETS = FPN_OUT_DELETED + sizeof(countType),
+        FPN_UN_USED = FPN_UN_BUCKETS + sizeof(countType),
+        FPN_UN_DELETED = FPN_UN_USED + sizeof(countType),
+        FPN_VAR = FPN_UN_DELETED + sizeof(countType) // 60
     };
 
     /** Root fixed field positions in byte.*/
@@ -70,14 +75,14 @@ namespace udbgraph {
         FPR_VER_MAJOR = FPN_VAR,
         FPR_VER_MINOR = FPR_VER_MAJOR + sizeof(countType),
         FPR_APP_NAME = FPR_VER_MINOR + sizeof(countType),
-        FPR_VAR = FPR_APP_NAME + APP_NAME_LENGTH
+        FPR_VAR = FPR_APP_NAME + APP_NAME_LENGTH // 100
     };
 
     /** Edge (directed and undirected) fixed field positions in byte. */
     enum FieldPosEdge {
         FPE_NODE_START = FP_VAR,
         FPE_NODE_END = FPE_NODE_START + sizeof(keyType),
-        FPE_VAR = FPE_NODE_END + sizeof(keyType)	// 32
+        FPE_VAR = FPE_NODE_END + sizeof(keyType) // 40
     };
 
     /** Access control list fixed field positions in byte. */
@@ -91,7 +96,7 @@ namespace udbgraph {
     crash or power outage. */
     enum FieldPosCont {
         FPC_HEAD = FP_VAR,
-        FPC_VAR = FPC_HEAD + sizeof(keyType)	// 32
+        FPC_VAR = FPC_HEAD + sizeof(keyType) // 32
     };
 
     /** Special key values. */
@@ -138,10 +143,22 @@ namespace udbgraph {
         }
     };
 
+    /** Common base class for unalignment management. */
+    class Unalignment {
+    protected:
+        /** True if unaligned memory access is enabled. */
+        static bool allowUnalign;
+
+    public:
+        /** Enables unaligned memory access. During record (dis)assembly.
+         * Disabled by default. Enabling this on architectures not supporting
+         * it will cause bus errors and program termination. */
+        static void enableUnalign() { allowUnalign = true; }
+    };
 
     /** Base class to perform fixed field input/output. Used also in Dump. */
-    class FixedFieldIO {
-    protected:
+    class FixedFieldIO : Unalignment {
+    private:
         /** Array containing field sizes on each fixed field position.
          * Zero means invalid position for that record. */
         static uint32_t pos2sizes[RT_NOMORE][FIELD_VAR_MAX_POS];
@@ -150,20 +167,66 @@ namespace udbgraph {
         /** Initializes pos2sizes. */
         static void initStatic() noexcept;
 
+        static void setField(uint32_t fieldStart, uint8_t value, uint8_t * const array);
+
+        /** Sets the fixed field using the templated version. */
+        static void setField(uint32_t fieldStart, uint16_t value, uint8_t * const array) {
+            doSetField(fieldStart, value, array);
+        }
+
+        /** Sets the fixed field using the templated version. */
+        static void setField(uint32_t fieldStart, uint32_t value, uint8_t * const array) {
+            doSetField(fieldStart, value, array);
+        }
+
+        /** Sets the fixed field using the templated version. */
+        static void setField(uint32_t fieldStart, uint64_t value, uint8_t * const array) {
+            doSetField(fieldStart, value, array);
+        }
+
+        /** Gets the fixed field starting at fieldStart, considering the
+         * actual record type from the specified array. The method assumes a valid
+         * record type at *array. If debugging is enabled,
+         * positions and limits are checked using the pos2Sizes array. The 4
+        main unsigned integer types are selected using ifs to let the pos2sizes
+        array resolve field width. This frees the programmer from remembering
+        field sizes. */
+        static uint64_t getField(uint32_t fieldStart, uint8_t * const array);
+
+    private:
         /** Sets the fixed field starting at fieldStart to the needed value,
          * considering the actual record type in the specified array.
          * The method assumes a valid record type at *array.
          * If debugging is enabled, positions and limits are checked using
          * the pos2Sizes array. */
-        static void setField(uint32_t fieldStart, uint64_t value, uint8_t * const array);
+        template<typename T>
+        static void doSetField(uint32_t fieldStart, T value, uint8_t * const array) {
+#ifdef DEBUG
+            checkPosition(fieldStart, *array);
+#endif
+            union {
+                T orig;
+                uint8_t bytes[sizeof(T)];
+            };
+            if(EndianInfo::isLittle()) {
+                if(allowUnalign) {
+                    *(reinterpret_cast<T*>(array + fieldStart)) = value;
+                }
+                else {
+                    orig = value;
+                    for(int i = 0; i < sizeof(T); i++) {
+                        array[fieldStart++] = bytes[i];
+                    }
+                }
+            }
+            else {
+                orig = value;
+                for(int i = sizeof(T) - 1; i >= 0; i--) {
+                    array[fieldStart++] = bytes[i];
+                }
+            }
+        }
 
-        /** Gets the fixed field starting at fieldStart, considering the
-         * actual record type from the specified array. The method assumes a valid
-         * record type at *array. If debugging is enabled,
-         * positions and limits are checked using the pos2Sizes array. */
-        static uint64_t getField(uint32_t fieldStart, uint8_t * const array);
-
-    protected:
         static void checkPosition(uint32_t fieldStart, int recordType);
     };
 
@@ -466,24 +529,30 @@ namespace udbgraph {
 
         /** Reads a character string using its length info. */
         void read(std::string &s, uint64_t len);
+
+    protected:
+        /** Calculates the start of the first bucket
+         * array such that the array begins aligned to keyType. */
+        size_t calcHashesPad(RecordType recType);
+
+        /** Calculates the total number of keys in a bucket array.
+         * In order to let one array grow without affecting others or the payload,
+         * each array is padded to a multiple of full record size + the minimal
+         * possible bucket length. */
+        size_t calcHashLen(uint32_t buckets);
+
+        /** Calculates the payload start for a given head record. */
+        size_t calcPayloadStart(Record &rec);
     };
 
     /** A wrapper class for RecordChain to hide unnecessary parts from Payload providing
     (de)serialization of some native types. */
-    class Converter final {
+    class Converter final : public Unalignment {
     protected:
         /** The RecordChain we wrap. */
         RecordChain &chain;
 
-        /** True if unaligned memory access is enabled. */
-        static bool allowUnalign;
-
     public:
-        /** Enables unaligned memory access. During record (dis)assembly.
-         * Disabled by default. Enabling this on architectures not supporting
-         * it will cause bus errors and program termination. */
-        static void enableUnalign() { allowUnalign = true; }
-
         Converter(RecordChain &s) : chain(s) {}
 
         /** Record assembly: stores a byte. */
@@ -636,6 +705,7 @@ namespace udbgraph {
             };
             if(EndianInfo::isLittle()) {
                 if(!allowUnalign || !chain.read(t)) {
+                    orig = 0;
                     for(int i = 0; i < sizeof(T); i++) {
                         chain.read(bytes[i]);
                     }
@@ -643,6 +713,7 @@ namespace udbgraph {
                 }
             }
             else {
+                orig = 0;
                 for(int i = sizeof(T) - 1; i >= 0; i--) {
                     chain.read(bytes[i]);
                 }

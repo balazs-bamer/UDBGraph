@@ -14,52 +14,44 @@ using namespace udbgraph;
 using namespace std;
 
 
+bool Unalignment::allowUnalign = false;
+
 uint32_t FixedFieldIO::pos2sizes[RT_NOMORE][FIELD_VAR_MAX_POS];
 
 void FixedFieldIO::initStatic() noexcept {
     for(int i = 0; i < RT_NOMORE; i++) {
-        pos2sizes[i][FP_RECORDTYPE] = 1;
-        pos2sizes[i][FP_LOCK] = 1;
-        pos2sizes[i][FP_RES1] = 1;
-        pos2sizes[i][FP_RES2] = 1;
+        pos2sizes[i][FP_RECORDTYPE] = sizeof(uint8_t);
+        pos2sizes[i][FP_LOCK] = sizeof(uint8_t);
+        pos2sizes[i][FP_RES1] = sizeof(uint8_t);
+        pos2sizes[i][FP_RES2] = sizeof(uint8_t);
         pos2sizes[i][FP_ACL] = sizeof(keyType);
         pos2sizes[i][FP_NEXT] = sizeof(keyType);
         pos2sizes[i][FP_PAYLOADTYPE] = sizeof(countType);
     }
     for(int i = 0; i < APP_NAME_LENGTH; i++) {
-        pos2sizes[RT_ROOT][FPR_APP_NAME + i] = 1;
+        pos2sizes[RT_ROOT][FPR_APP_NAME + i] = sizeof(uint8_t);
     }
     pos2sizes[RT_ROOT][FPR_VER_MAJOR] = sizeof(countType);
     pos2sizes[RT_ROOT][FPR_VER_MINOR] = sizeof(countType);
-    pos2sizes[RT_ROOT][FPN_CNT_INEDGE] = pos2sizes[RT_NODE][FPN_CNT_INEDGE] = sizeof(countType);
-    pos2sizes[RT_ROOT][FPN_CNT_OUTEDGE] = pos2sizes[RT_NODE][FPN_CNT_OUTEDGE] = sizeof(countType);
-    pos2sizes[RT_ROOT][FPN_CNT_UNEDGE] = pos2sizes[RT_NODE][FPN_CNT_UNEDGE] = sizeof(countType);
-    pos2sizes[RT_ROOT][FPN_CNT_FREDGE] = pos2sizes[RT_NODE][FPN_CNT_FREDGE] = sizeof(countType);
+    pos2sizes[RT_ROOT][FPN_IN_BUCKETS] = pos2sizes[RT_NODE][FPN_IN_BUCKETS] = sizeof(countType);
+    pos2sizes[RT_ROOT][FPN_IN_USED] = pos2sizes[RT_NODE][FPN_IN_USED] = sizeof(countType);
+    pos2sizes[RT_ROOT][FPN_IN_DELETED] = pos2sizes[RT_NODE][FPN_IN_DELETED] = sizeof(countType);
+    pos2sizes[RT_ROOT][FPN_OUT_BUCKETS] = pos2sizes[RT_NODE][FPN_OUT_BUCKETS] = sizeof(countType);
+    pos2sizes[RT_ROOT][FPN_OUT_USED] = pos2sizes[RT_NODE][FPN_OUT_USED] = sizeof(countType);
+    pos2sizes[RT_ROOT][FPN_OUT_DELETED] = pos2sizes[RT_NODE][FPN_OUT_DELETED] = sizeof(countType);
+    pos2sizes[RT_ROOT][FPN_UN_BUCKETS] = pos2sizes[RT_NODE][FPN_UN_BUCKETS] = sizeof(countType);
+    pos2sizes[RT_ROOT][FPN_UN_USED] = pos2sizes[RT_NODE][FPN_UN_USED] = sizeof(countType);
+    pos2sizes[RT_ROOT][FPN_UN_DELETED] = pos2sizes[RT_NODE][FPN_UN_DELETED] = sizeof(countType);
     pos2sizes[RT_DEDGE][FPE_NODE_START] = pos2sizes[RT_UEDGE][FPE_NODE_START] = sizeof(keyType);
     pos2sizes[RT_DEDGE][FPE_NODE_END] = pos2sizes[RT_UEDGE][FPE_NODE_END] = sizeof(keyType);
     pos2sizes[RT_CONT][FPC_HEAD] = sizeof(keyType);
 }
 
-void FixedFieldIO::setField(uint32_t fieldStart, uint64_t value, uint8_t * const array) {
+void FixedFieldIO::setField(uint32_t fieldStart, uint8_t value, uint8_t * const array) {
 #ifdef DEBUG
     checkPosition(fieldStart, *array);
 #endif
-    int len = pos2sizes[array[FP_RECORDTYPE]][fieldStart];
-    union {
-        uint64_t orig;
-        uint8_t bytes[sizeof(uint64_t)];
-    };
-    orig = value;
-    if(EndianInfo::isLittle()) {
-        for(int i = 0; i < len; i++) {
-            array[fieldStart++] = bytes[i];
-        }
-    }
-    else {
-        for(int i = 1; i <= len; i++) {
-            array[fieldStart++] = bytes[sizeof(uint64_t) - i];
-        }
-    }
+    array[fieldStart] = value;
 }
 
 uint64_t FixedFieldIO::getField(uint32_t fieldStart, uint8_t * const array) {
@@ -68,21 +60,43 @@ uint64_t FixedFieldIO::getField(uint32_t fieldStart, uint8_t * const array) {
 #endif
     int len = pos2sizes[array[FP_RECORDTYPE]][fieldStart];
     union {
-        uint64_t orig;
+        uint64_t read;
         uint8_t bytes[sizeof(uint64_t)];
     };
-    orig = 0;
     if(EndianInfo::isLittle()) {
-        for(int i = 0; i < len; i++) {
-            bytes[i] = array[fieldStart++];
+        if(allowUnalign) {
+            if(len < sizeof(uint32_t)) {
+                if(len == sizeof(uint8_t)) {
+                    read = array[fieldStart];
+                }
+                else {
+                    read = *(reinterpret_cast<uint16_t*>(array + fieldStart));
+                }
+            }
+            else {
+                if(len == sizeof(uint32_t)) {
+                    read = *(reinterpret_cast<uint32_t*>(array + fieldStart));
+                }
+                else {
+                    read = *(reinterpret_cast<uint64_t*>(array + fieldStart));
+                }
+            }
+
+        }
+        else {
+            read = 0;
+            for(int i = 0; i < len; i++) {
+                bytes[i] = array[fieldStart++];
+            }
         }
     }
     else {
+        read = 0;
         for(int i = 1; i <= len; i++) {
             bytes[sizeof(uint64_t) - i] = array[fieldStart++];
         }
     }
-    return orig;
+    return read;
 }
 
 void FixedFieldIO::checkPosition(uint32_t fieldStart, int recordType) {
@@ -93,10 +107,10 @@ void FixedFieldIO::checkPosition(uint32_t fieldStart, int recordType) {
     }
     uint32_t len = pos2sizes[recordType][fieldStart];
     switch(len) {
-    case 1:
-    case 2:
-    case 4:
-    case 8:
+    case sizeof(uint8_t):
+    case sizeof(uint16_t):
+    case sizeof(uint32_t):
+    case sizeof(uint64_t):
         return;
     case 0:
         throw DebugException(string("Invalid position (") + to_string(static_cast<int>(fieldStart)) +
@@ -114,7 +128,8 @@ void RecordChain::Record::setSize(size_t s) {
 #ifndef DEBUG
     if(size == 0) {
 #endif
-        if(s <= FIELD_VAR_MAX_POS || s > UDB_MAX_RECORD_SIZE) {
+        if(s <= FIELD_VAR_MAX_POS + 2 * sizeof(uint64_t) ||
+                s > UDB_MAX_RECORD_SIZE || s % sizeof(uint64_t) != 0) {
             throw DebugException("Invalid record size.");
         }
         size = s;
@@ -364,15 +379,8 @@ RCState was = state;
     }
     if(state == RCState::HEAD && level == RCState::PARTIAL) {
         recType = RecordType(content.begin()->getField(FP_RECORDTYPE));
-        payloadStart = Record::recordVarStarts[recType];
-        if(recType == RT_NODE || recType == RT_ROOT) {
-            size_t totalLen = content.begin()->getField(FPN_CNT_INEDGE) +
-                content.begin()->getField(FPN_CNT_OUTEDGE) +
-                content.begin()->getField(FPN_CNT_UNEDGE) +
-                content.begin()->getField(FPN_CNT_FREDGE);
-            payloadStart += totalLen * sizeof(keyType);
-        }
-        desired = payloadStart = payloadStart/ Record::getSize() + 1;
+        payloadStart = calcPayloadStart(*(content.begin()));
+        desired = payloadStart = payloadStart / Record::getSize() + 1;
     }
     // for PARTIAL we must calculate from head
     while(true) {
@@ -388,15 +396,8 @@ RCState was = state;
         }
         if(content.size() == 0) {
             recType = RecordType(record.getField(FP_RECORDTYPE));
-            payloadStart = Record::recordVarStarts[recType];
-            if(recType == RT_NODE || recType == RT_ROOT) {
-                size_t totalLen = record.getField(FPN_CNT_INEDGE) +
-                    record.getField(FPN_CNT_OUTEDGE) +
-                    record.getField(FPN_CNT_UNEDGE) +
-                    record.getField(FPN_CNT_FREDGE);
-                payloadStart += totalLen * sizeof(keyType);
-            }
-            payloadStart = payloadStart/ Record::getSize() + 1;
+            payloadStart = calcPayloadStart(record);
+            payloadStart = payloadStart / Record::getSize() + 1;
             if(level == RCState::PARTIAL) {
                 if(recType == RT_DEDGE || recType == RT_UEDGE) {
                     // edge
@@ -562,7 +563,34 @@ void RecordChain::read(string &s, uint64_t len) {
     delete[] cp;
 }
 
-bool Converter::allowUnalign = false;
+size_t RecordChain::calcHashesPad(RecordType recType) {
+    return (Record::recordVarStarts[recType] + sizeof(keyType) - 1) /
+            sizeof(keyType) * sizeof(keyType);
+}
+
+size_t RecordChain::calcHashLen(uint32_t buckets) {
+    size_t keysPerRecord = Record::getSize() / sizeof(keyType);
+    // TODO change
+    unsigned M  = 5;
+    return (buckets - M + keysPerRecord - 1) / keysPerRecord * keysPerRecord + M;
+}
+
+size_t RecordChain::calcPayloadStart(Record &rec) {
+    RecordType recType = RecordType(rec.getField(FP_RECORDTYPE));
+    size_t payloadStart;
+    if(recType == RT_NODE || recType == RT_ROOT) {
+        payloadStart = calcHashesPad(recType);
+        size_t totalLen =
+            calcHashLen(rec.getField(FPN_IN_BUCKETS)) +
+            calcHashLen(rec.getField(FPN_OUT_BUCKETS)) +
+            calcHashLen(rec.getField(FPN_UN_BUCKETS));
+        payloadStart += totalLen * sizeof(keyType);
+    }
+    else {
+        payloadStart = Record::recordVarStarts[recType];
+    }
+    return payloadStart;
+}
 
 Converter& Converter::operator>>(int8_t& b) {
     uint8_t t;

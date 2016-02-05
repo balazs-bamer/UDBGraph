@@ -8,6 +8,9 @@
 * UpscaleDB record management
 * Node insert and update
 
+The file src/todo.txt contains planned modifications.
+
+
 ## Motivation
 
 I need a simple, embedded graph database for a future project with C++ API. My design aims were:
@@ -100,7 +103,7 @@ The UDBGraph versions with and without ACL will be compatible with the following
 
 UDBGraph elements can have arbitrary size, which may be unknown even during application design. UpscaleDB offers fixed size and variable size records. Smaller fixed size records are stored in the B-tree nodes to increase performance, while variable size records are stored outside the B-tree.
 
-I've decided to use fixed size records, because in many applications most graph elements store only a small amount of data, so these would then fit in the B-tree nodes. Record size is determined during database creation. Larger payloads will require more records, which are organized into chain connecting to the head record holding the graph element core. These chains are double linked and all records (except for the head) store the head key in addition. This will help database recovery if it will be implemented.
+I've decided to use fixed size records, because in many applications most graph elements store only a small amount of data, so these would then fit in the B-tree nodes. Record size is determined during database creation. It must be large enough to contain the largest fixed field set + one aligned key, not exceed 1M and be a multiply of the key size. Larger payloads will require more records, which are organized into chain connecting to the head record holding the graph element core. These chains are double linked and all records (except for the head) store the head key in addition. This will help database recovery if it will be implemented.
 
 Records are identified by their key in UpscaleDB, so the key of the head record identify the graph element itself.
 

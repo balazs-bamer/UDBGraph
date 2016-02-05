@@ -643,9 +643,9 @@ void DirEdge::write(deque<shared_ptr<GraphElem>> &connected, ups_txn_t *tr) {
     GraphElem::write(connected, tr);
     if(needUpdateEnds) {
         // first key is for edge start, the edge comes out of this node
-        dynamic_pointer_cast<AbstractNode>(connected[0])->addEdge(key, FPN_CNT_OUTEDGE, tr);
+        dynamic_pointer_cast<AbstractNode>(connected[0])->addEdge(key, FPN_OUT_BUCKETS, tr);
         // second key is for edge end, the edge goes into this node
-        dynamic_pointer_cast<AbstractNode>(connected[1])->addEdge(key, FPN_CNT_INEDGE, tr);
+        dynamic_pointer_cast<AbstractNode>(connected[1])->addEdge(key, FPN_IN_BUCKETS, tr);
     }
 }
 
@@ -653,8 +653,8 @@ void UndirEdge::write(deque<shared_ptr<GraphElem>> &connected, ups_txn_t *tr) {
     bool needUpdateEnds = state == GEState::DU;
     GraphElem::write(connected, tr);
     if(needUpdateEnds) {
-        dynamic_pointer_cast<AbstractNode>(connected[0])->addEdge(key, FPN_CNT_UNEDGE, tr);
-        dynamic_pointer_cast<AbstractNode>(connected[1])->addEdge(key, FPN_CNT_UNEDGE, tr);
+        dynamic_pointer_cast<AbstractNode>(connected[0])->addEdge(key, FPN_UN_BUCKETS, tr);
+        dynamic_pointer_cast<AbstractNode>(connected[1])->addEdge(key, FPN_UN_BUCKETS, tr);
     }
 }
 

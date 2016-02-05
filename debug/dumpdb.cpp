@@ -191,10 +191,15 @@ void Dump::Record::printRoot() const {
         cout << record[i];
     }
     cout << ')';
-    print("in", FPN_CNT_INEDGE);
-    print("out", FPN_CNT_OUTEDGE);
-    print("un", FPN_CNT_UNEDGE);
-    print("fr", FPN_CNT_FREDGE);
+    print("in_bkt", FPN_IN_BUCKETS);
+    print("in_use", FPN_IN_USED);
+    print("in_del", FPN_IN_DELETED);
+    print("out_bkt", FPN_OUT_BUCKETS);
+    print("out_use", FPN_OUT_USED);
+    print("out_del", FPN_OUT_DELETED);
+    print("un_bkt", FPN_UN_BUCKETS);
+    print("un_use", FPN_UN_USED);
+    print("un_del", FPN_UN_DELETED);
 }
 
 void Dump::Record::printACL() const {
@@ -202,10 +207,15 @@ void Dump::Record::printACL() const {
 }
 
 void Dump::Record::printNode() const {
-    print("in", FPN_CNT_INEDGE);
-    print("out", FPN_CNT_OUTEDGE);
-    print("un", FPN_CNT_UNEDGE);
-    print("fr", FPN_CNT_FREDGE);
+    print("in_bkt", FPN_IN_BUCKETS);
+    print("in_use", FPN_IN_USED);
+    print("in_del", FPN_IN_DELETED);
+    print("out_bkt", FPN_OUT_BUCKETS);
+    print("out_use", FPN_OUT_USED);
+    print("out_del", FPN_OUT_DELETED);
+    print("un_bkt", FPN_UN_BUCKETS);
+    print("un_use", FPN_UN_USED);
+    print("un_del", FPN_UN_DELETED);
 }
 
 void Dump::Record::printEdge() const {

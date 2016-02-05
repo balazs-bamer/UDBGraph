@@ -168,6 +168,22 @@ void testAlignment() {
 	}
 }
 
+void testFixedIO() {
+	uint8_t u8 = 3;
+	uint32_t u32 = 12345678;
+	uint64_t u64 = 12345678987654321;
+	uint8_t array[1000];
+	array[0] = 0;
+	FixedFieldIO::setField(FP_LOCK, u8, array);
+	FixedFieldIO::setField(FP_PAYLOADTYPE, u32, array);
+	FixedFieldIO::setField(FP_NEXT, u64, array);
+	if(FixedFieldIO::getField(FP_LOCK, array) != u8 ||
+		FixedFieldIO::getField(FP_PAYLOADTYPE, array) != u32 ||
+		FixedFieldIO::getField(FP_NEXT, array) != u64) {
+		cout << "FixedFieldIO problem.\n";
+	}
+}
+
 void testCounterMap() {
 	CounterMap<keyType, countType> cnt;
 	cnt.inc(1);
@@ -246,7 +262,7 @@ void loadsave(int edges, int payLen, bool readOnce, uint64_t recordSize) {
 
 	// fill record chain
 	if(isNode) {
-		rc.setHeadField(FPN_CNT_INEDGE, edges);
+		rc.setHeadField(FPN_IN_BUCKETS, edges);
 		for(keyType i = 1; i <= edges; i++) {
 			conv << i;
 		}
@@ -343,11 +359,12 @@ int main(int argc, char** argv) {
     serializeInplace(980);
     serializeInplace(2000);
     serializeInplace(3000);
-	testCounterMap();
 	testAlignment();
+	testFixedIO();
+	testCounterMap();
 //	loadsave(int edges, int payLen, bool readOnce, int recordSize) {
 	loadsave(-1, 0, true, 1024);
-	loadsave(0, 0, true, 1024);
+	loadsave(5, 0, true, 1024);
 	loadsave(10, 0, true, 1024);
 	loadsave(100, 0, true, 1024);
 	loadsave(200, 0, true, 1024);

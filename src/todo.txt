@@ -2,13 +2,7 @@
 
 - getNeighbours/getEdges: gets a comparison object and if the matched item is free, it returns. If locked by an other transaction, throws Exception.
 
-- Partial reading of RecordChain in 2 steps:
-	-head only
-	-if node: edges until the payload appears.
-- More reading on demand:
-	-examine/modify edges
-	-get payload.
-- This feature can be switched off: always read complete chain.
+- Partial reading of RecordChain can be switched off: always read complete chain.
 
 - Eliminate static stuff and make these relative to Database. This will enable
   use of databases with different design in an application.
