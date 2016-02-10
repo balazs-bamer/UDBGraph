@@ -4,7 +4,7 @@
 * Database handling core
 * Transaction management
 * Payload serializing and deserializing
-* Record chain reading and writing
+* Record chain loading and saving together with node's edge lists
 * UpscaleDB record management
 * Node insert and update
 
@@ -103,7 +103,7 @@ The UDBGraph versions with and without ACL will be compatible with the following
 
 UDBGraph elements can have arbitrary size, which may be unknown even during application design. UpscaleDB offers fixed size and variable size records. Smaller fixed size records are stored in the B-tree nodes to increase performance, while variable size records are stored outside the B-tree.
 
-I've decided to use fixed size records, because in many applications most graph elements store only a small amount of data, so these would then fit in the B-tree nodes. Record size is determined during database creation. It must be large enough to contain the largest fixed field set + one aligned key, not exceed 1M and be a multiply of the key size. Larger payloads will require more records, which are organized into chain connecting to the head record holding the graph element core. These chains are double linked and all records (except for the head) store the head key in addition. This will help database recovery if it will be implemented.
+I've decided to use fixed size records, because in many applications most graph elements store only a small amount of data, so these would then fit in the B-tree nodes. Record size is determined during database creation. It must be large enough to contain the largest fixed field set (currently root) together with three smallest-size hash tables and the payload beginning. It may not exceed 1M and be a multiply of the key size. Larger payloads will require more records, which are organized into chain connecting to the head record holding the graph element core. These chains are double linked and all records (except for the head) store the head key in addition. This will help database recovery if it will be implemented.
 
 Records are identified by their key in UpscaleDB, so the key of the head record identify the graph element itself.
 
@@ -134,9 +134,29 @@ Continuation |Continuation in the record chain.
 UpscaleDB records have 64-bit unsigned keys, incremented as new records are inserted. The initial value is determined during database open, so counting continues where it was last time suspended. The extreme bit width assures no overlap in general use.
 
 
+#### Edge lists in nodes
+
+Nodes store three sets of connecting edge keys:
+* Incoming edge
+* Outgoing edge
+* Undirected edge
+
+Managing these sets must be efficient for just a few edges as well as for thousands of edges. I implement a growable open-addressing hash table for each set. The hash table algorithm is designed such that
+* It uses space more efficiently than linked-list hash tables.
+* It uses double hashing to distribute the keys as evenly as possible - this implies the hash table size to be a prime. These primes are pre-calculated and placed along the geometric series a[n] = 2^(1/4 + n/2).
+* If no reallocation occours, adding or removing a key involves at most two UpscaleDB records. This is very important since every edge insertion or deletion involves two node modifications.
+* Deleted keys are marked as deleted to speed up average operation.
+* Reallocation occurs if
+  * the sum of used + deleted entries exceed a limit.
+  * if the number of deleted entries exceed the used.
+* Reallocation happens by inserting or removing whole records from the hash table such that the begin and end offset inside a record remains the same. This method saves the other hash tables and the payload from expensive relocation. This is even true for the minimal hash table with currently 5 buckets.
+* Initially each hash table has 5 buckets only. This lets nodes store a few edges and a short payload in only one record.
+
+The hash algorithm skeleton is implemented in _openaddressing.cpp_.
+
 ### Operations and inner status management
 
-All user actions ar designed such that first the library makes sure that every involved graph element is accessible (not locked by other transactions and the user has appropriate permissions). If this check succeeds, only then starts the phase changing inner status of the library and the graph element instances. In this phase only UpscaleDB exceptions may sign fatal errors.
+All user actions ar designed such that first the library makes sure that every involved graph element is accessible (not locked by other transactions and the user has appropriate permissions). If this check succeeds, only then starts the phase changing inner status of the library and the graph element instances. In this phase only UpscaleDB exceptions may signal fatal errors.
 
 All graph element instances maintain two record chains. One of them holds the original record contents before the transaction, the other the result of modification(s) during the transactions. For better performance, it is possible to read and write these partially, so leaving edge arrays and / or payload off when only the beginning is interesting.
 
@@ -207,4 +227,4 @@ Other errors possible are:
 * Errors signed by UpscaleDB.
 * DebugException signing programmer error in UDBGraph. When it is mature enough, no such exceptions should occur any more.
 
-I'm writing unit tests in the debug subdirectory to make sure each part works correctly. Moreover, the dumpdb utility is provided to dump the database contents (record chains and fixed fields) on standard output.
+I'm writing unit tests in the debug subdirectory to make sure each part works correctly. These contain test functions for each major part or milestone in the library. Moreover, the dumpdb utility is provided to dump the database contents (record chains and fixed fields) on standard output.
