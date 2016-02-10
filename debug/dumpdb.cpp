@@ -6,6 +6,7 @@ COPYRIGHT COMES HERE
 #include<unordered_map>
 #include<list>
 #include<cstring>
+#include<csignal>
 #include<iostream>
 #include"udbgraph.h"
 
@@ -17,6 +18,11 @@ using namespace udbgraph;
 using namespace std;
 
 // parts taken from UpscaleDB samples db2.c
+
+/** SIGSEGV handler, throws a DebugException. */
+extern void handleSigsegv(int sig) {
+    throw DebugException("SIGSEGV!");
+}
 
 /** Simple class to dump a whole database to stdout. */
 class Dump final : public CheckUpsCall {
@@ -356,6 +362,7 @@ int main(int argc, char** argv) {
 #if USE_NVWA == 1
     nvwa::new_progname = argv[0];
 #endif
+	signal(SIGSEGV, handleSigsegv);
     InitStatic globalStaticInitializer;
     try {
         if(argc < 2) {

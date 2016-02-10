@@ -7,7 +7,6 @@ COPYRIGHT COMES HERE
 #ifndef UDB_SERIALIZER_H
 #define UDB_SERIALIZER_H
 
-#include<list>
 #include<deque>
 #include<cstdint>
 #include<algorithm>
@@ -37,6 +36,9 @@ namespace udbgraph {
     /** Type for quantities stored in fixed record fields. */
     typedef uint32_t countType;
 
+    /** Type for indexing along the records and hash. */
+    typedef uint64_t indexType;
+
     /** UDBGraph graph elem type. */
     typedef uint32_t payloadType;
 
@@ -44,7 +46,7 @@ namespace udbgraph {
      * converted to int. RT_ACL stands for access control list, which will be
     implemented in a future version. */
     enum RecordType {
-        RT_ROOT, RT_ACL, RT_NODE, RT_DEDGE, RT_UEDGE, RT_CONT, RT_NOMORE
+        RT_INVALID, RT_ROOT, RT_ACL, RT_NODE, RT_DEDGE, RT_UEDGE, RT_CONT, RT_NOMORE
     };
 
     /** Common fixed field positons for all sort of records. */
@@ -54,6 +56,13 @@ namespace udbgraph {
         FP_NEXT = FP_ACL + sizeof(keyType),
         FP_PAYLOADTYPE = FP_NEXT + sizeof(keyType),
         FP_VAR = FP_PAYLOADTYPE + sizeof(payloadType) // 24
+    };
+
+    /** Relative field positions for bucket management. */
+    enum FieldRel {
+        FR_USED = sizeof(countType),
+        FR_DELETED = FR_USED + sizeof(countType),
+        FR_SPAN = FR_DELETED + sizeof(countType)
     };
 
     /** Node fixed field positions in byte, part of root. */
@@ -70,7 +79,9 @@ namespace udbgraph {
         FPN_VAR = FPN_UN_DELETED + sizeof(countType) // 60
     };
 
-    /** Root fixed field positions in byte.*/
+    /** Root fixed field positions in byte. Together with a smallest hash table
+    length of 5 this structure implies record sizes >= 240. 256 is a good smallest
+    value. */
     enum FieldPosRoot {
         FPR_VER_MAJOR = FPN_VAR,
         FPR_VER_MINOR = FPR_VER_MAJOR + sizeof(countType),
@@ -129,6 +140,11 @@ namespace udbgraph {
         FULL
     };
 
+    /** Identifiers of record chain sections used to index RecordChain.hashStart*. */
+    enum RCSection {
+        RCS_IN, RCS_OUT, RCS_UN, RCS_PAY, RCS_NOMORE
+    };
+
 #define MAXMACRO(x,y) ((static_cast<int>(x))>(static_cast<int>(y))?(static_cast<int>(x)):(static_cast<int>(y)))
 #define FIELD_VAR_MAX_POS MAXMACRO(MAXMACRO(MAXMACRO(FPN_VAR,FPR_VAR),MAXMACRO(FPE_VAR,FPC_VAR)),FPA_VAR)
 
@@ -161,28 +177,22 @@ namespace udbgraph {
     private:
         /** Array containing field sizes on each fixed field position.
          * Zero means invalid position for that record. */
-        static uint32_t pos2sizes[RT_NOMORE][FIELD_VAR_MAX_POS];
+        static countType pos2sizes[RT_NOMORE][FIELD_VAR_MAX_POS];
 
     public:
         /** Initializes pos2sizes. */
         static void initStatic() noexcept;
 
-        static void setField(uint32_t fieldStart, uint8_t value, uint8_t * const array);
+        static void setField(countType fieldStart, uint8_t value, uint8_t * const array);
 
         /** Sets the fixed field using the templated version. */
-        static void setField(uint32_t fieldStart, uint16_t value, uint8_t * const array) {
-            doSetField(fieldStart, value, array);
-        }
+        static void setField(countType fieldStart, uint16_t value, uint8_t * const array);
 
         /** Sets the fixed field using the templated version. */
-        static void setField(uint32_t fieldStart, uint32_t value, uint8_t * const array) {
-            doSetField(fieldStart, value, array);
-        }
+        static void setField(countType fieldStart, uint32_t value, uint8_t * const array);
 
         /** Sets the fixed field using the templated version. */
-        static void setField(uint32_t fieldStart, uint64_t value, uint8_t * const array) {
-            doSetField(fieldStart, value, array);
-        }
+        static void setField(countType fieldStart, uint64_t value, uint8_t * const array);
 
         /** Gets the fixed field starting at fieldStart, considering the
          * actual record type from the specified array. The method assumes a valid
@@ -191,19 +201,20 @@ namespace udbgraph {
         main unsigned integer types are selected using ifs to let the pos2sizes
         array resolve field width. This frees the programmer from remembering
         field sizes. */
-        static uint64_t getField(uint32_t fieldStart, uint8_t * const array);
+        static uint64_t getField(countType fieldStart, uint8_t * const array);
 
-    private:
+    protected:
+        /** Performs the task of getField without any check during debuigging.
+            If len given as hint, it overrides the pos2sizes lookup. */
+        static uint64_t doGetField(countType fieldStart, uint8_t * const array, uint8_t len = 0);
+
         /** Sets the fixed field starting at fieldStart to the needed value,
          * considering the actual record type in the specified array.
          * The method assumes a valid record type at *array.
          * If debugging is enabled, positions and limits are checked using
          * the pos2Sizes array. */
         template<typename T>
-        static void doSetField(uint32_t fieldStart, T value, uint8_t * const array) {
-#ifdef DEBUG
-            checkPosition(fieldStart, *array);
-#endif
+        static void doSetField(countType fieldStart, T value, uint8_t * const array) {
             union {
                 T orig;
                 uint8_t bytes[sizeof(T)];
@@ -227,7 +238,8 @@ namespace udbgraph {
             }
         }
 
-        static void checkPosition(uint32_t fieldStart, int recordType);
+    private:
+        static void checkPosition(countType fieldStart, RecordType recordType, uint8_t width = 0);
     };
 
     /** Class to contain serialized native types, 0 delimited char arrays and strings.
@@ -242,7 +254,10 @@ namespace udbgraph {
         class Record final : public CheckUpsCall, public FixedFieldIO {
         protected:
             /** UpscaleDB record size. */
-            static size_t size;
+            static countType size;
+
+            /** Maximal number of keys in a record. */
+            static countType keysPerRecord;
 
             /** Pointer to the content. */
             uint8_t * record;
@@ -261,13 +276,29 @@ namespace udbgraph {
 
         public:
             /** Array to index with RecordType to get the starting record indices. */
-            static constexpr uint32_t recordVarStarts[] = {FPR_VAR, FPA_VAR, FPN_VAR, FPE_VAR, FPE_VAR, FPC_VAR};
+            static constexpr uint32_t recordVarStarts[] = {0, FPR_VAR, FPA_VAR, FPN_VAR, FPE_VAR, FPE_VAR, FPC_VAR};
+
+            /** Array to index with recordType containing the start of the first
+             * bucket array in keyType units such that the array begins aligned to
+             * keyType. Meaningful for RT_NODE, RT_ROOT and RT_CONT, otherwise 0. */
+            static constexpr countType hashStarts[] = {
+                0,
+                (recordVarStarts[RT_ROOT] + sizeof(keyType) - 1) / sizeof(keyType),
+                0,
+                (recordVarStarts[RT_NODE] + sizeof(keyType) - 1) / sizeof(keyType),
+                0, 0,
+                (recordVarStarts[RT_CONT] + sizeof(keyType) - 1) / sizeof(keyType)
+            };
+
 
             /** Gets the static record size. */
-            static size_t getSize() { return size; }
+            static countType getKeysPerRecord() { return keysPerRecord; }
+
+            /** Gets the static record size. */
+            static countType getSize() { return size; }
 
             /** Sets the static record size. */
-            static void setSize(size_t s);
+            static void setSize(countType s);
 
             /** Checks the record size to make sure it was set. */
             static void checkSize();
@@ -304,11 +335,32 @@ namespace udbgraph {
             /** Resets the index to the end of the fixed fields. */
             void reset() { index = recordVarStarts[record[FP_RECORDTYPE]]; }
 
+            /** Sets the index to the specified position. */
+            void setIndex(countType pos) { index = pos; }
+
             /** Returns the key. */
             keyType getKey() const { return key; }
 
-            /** Sets the key. */
+            /** Sets the record key. */
             void setKey(keyType k) { if(key == static_cast<keyType>(KEY_INVALID)) { key = k; } }
+
+            /** Sets the fixed field starting at fieldStart to the needed value,
+             * considering the actual record type using FixedFieldIO::setField. */
+            void setField(uint32_t fieldStart, uint8_t value) {
+                FixedFieldIO::setField(fieldStart, value, record);
+            }
+
+            /** Sets the fixed field starting at fieldStart to the needed value,
+             * considering the actual record type using FixedFieldIO::setField. */
+            void setField(uint32_t fieldStart, uint16_t value) {
+                FixedFieldIO::setField(fieldStart, value, record);
+            }
+
+            /** Sets the fixed field starting at fieldStart to the needed value,
+             * considering the actual record type using FixedFieldIO::setField. */
+            void setField(uint32_t fieldStart, uint32_t value) {
+                FixedFieldIO::setField(fieldStart, value, record);
+            }
 
             /** Sets the fixed field starting at fieldStart to the needed value,
              * considering the actual record type using FixedFieldIO::setField. */
@@ -318,20 +370,27 @@ namespace udbgraph {
 
             /** Gets the fixed field starting at fieldStart, considering the
              * actual record type using FixedFieldIO::getField. */
-            uint64_t getField(uint32_t fieldStart) {
+            uint64_t getField(uint32_t fieldStart) const {
                 return FixedFieldIO::getField(fieldStart, record);
             }
+
+            /** Writes the key at the specified pos position. */
+            void writeKey(countType pos, keyType key);
+
+            /** Reads the key from the specified pos position. */
+            keyType readKey(countType pos) const;
 
             /** Puts a byte in the record. Returns true if
              * success, false if the record was full. */
             bool operator<<(const uint8_t byte) noexcept;
 
-            /** Reads this type if it fits in the record.
+            /** Reads this type if it fits in the record using reinterpret_cast.
+             * Called only on little-endian.
              * @return the number of bytes read, or could have been read if
              * less than sizeof(t). */
             template<typename T>
-            size_t read(T &t) {
-                size_t remaining = size - index;
+            countType read(T &t) {
+                countType remaining = size - index;
                 if(remaining >= sizeof(t)) {
                     t = *(reinterpret_cast<T*>(record + index));
                     index += sizeof(t);
@@ -350,12 +409,13 @@ namespace udbgraph {
              * if the index was less than the record size. */
             bool operator>>(uint8_t &byte) noexcept;
 
-            /** Writes this type if it fits in the record.
+            /** Writes this type if it fits in the record using reinterpret_cast.
+             * Called only on little-endian.
              * @return the number of bytes read, or could have been read if
              * less than sizeof(t). */
             template<typename T>
-            size_t write(T t) {
-                size_t remaining = size - index;
+            countType write(T t) {
+                countType remaining = size - index;
                 if(remaining >= sizeof(t)) {
                     *(reinterpret_cast<T*>(record + index)) = t;
                     index += sizeof(t);
@@ -368,14 +428,40 @@ namespace udbgraph {
              * its length. Returns the actually read length. */
             uint64_t read(char *cp, uint64_t len) noexcept;
 
-            /** Read the record from db using the transaction. Calls check
+            /** Loads the record from db using the transaction. Calls check
              * if status was not UPS_KEY_NOT_FOUND, otherwise returns it and let the
              * caller handle it. */
-            ups_status_t read(ups_db_t *db, keyType key, ups_txn_t *tr) noexcept;
+            ups_status_t load(ups_db_t *db, keyType key, ups_txn_t *tr) noexcept;
 
             /** Write the record in db using the transaction. */
-            void write(ups_db_t *db, ups_txn_t *tr);
+            void save(ups_db_t *db, ups_txn_t *tr);
         };
+
+        /** Primes to use as open addressing hash buckets count. These residue
+         * along the geometric series a[n] = 2^(1/4 + n/2) to ensure rare hash
+         * table reallocation. */
+        static countType constexpr primes[] = {
+                5, 11, 19, 29, 37, 53, 79, 109, 151, 211, 307, 431, 607, 863,
+                1217, 1723, 2437, 3449, 4871, 6883, 9743, 13781, 19483, 27551, 38971,
+                55109, 77933, 110221, 155863, 220447, 311743, 440863, 623477, 881743,
+                1246963, 1763491, 2493949, 3526987, 4987901, 7053971, 9975803, 14107889,
+                19951579, 28215799, 39903161, 56431601, 79806341, 112863197, 159612679,
+                225726419, 319225331, 451452823, 638450719, 902905657, 1276901429,
+                1805811263, 2553802819, 3611622607
+            };
+
+        /** Number of usable primes. */
+        static countType constexpr primesLen = sizeof(primes) / sizeof(uint32_t);
+
+        /** Start indices in content for the hash arrays INcoming, OUTgoing, UNdirected
+         * and payload, respectively. (See enum RCSection.)
+         * Set by setHashStart only for RT_NODE and RT_ROOT. */
+        indexType hashStartRecord[RCS_NOMORE];
+
+        /** Start indices within record for the hash arrays INcoming, OUTgoing, UNdirected
+         * and payload, respectively. (See enum RCSection.)
+         * Set by setHashStart only for RT_NODE and RT_ROOT. */
+        countType hashStartKey[RCS_NOMORE];
 
         /** UpscaleDB database pointer. */
         ups_db_t *db = nullptr;
@@ -387,10 +473,10 @@ namespace udbgraph {
         RCState state = RCState::EMPTY;
 
         /** List of records assembled or to extract from. */
-        std::list<Record> content;
+        std::deque<Record> content;
 
-        /** Iterator in content pointing to the Record to extract from or write into. */
-        std::list<Record>::iterator iter = content.begin();
+        /** Index in content pointing to the Record to extract from or write into. */
+        countType index = 0;
 
         /** Payload type for the content. */
         payloadType pType;
@@ -428,7 +514,7 @@ namespace udbgraph {
         or aborted, so no records are written now.*/
         void clone(const RecordChain &other);
 
-        /** Resets the content iterator to the beginning and all Record indexes
+        /** Resets the content index to the beginning and all Record indexes
         right after the fixed part. */
         void reset();
 
@@ -440,11 +526,26 @@ namespace udbgraph {
 
         /** Sets the fixed field starting at fieldStart to the needed value
          * in the first record considering the actual record type. */
+        void setHeadField(uint32_t fieldStart, uint8_t value);
+
+        /** Sets the fixed field starting at fieldStart to the needed value
+         * in the first record considering the actual record type. */
+        void setHeadField(uint32_t fieldStart, uint16_t value);
+
+        /** Sets the fixed field starting at fieldStart to the needed value
+         * in the first record considering the actual record type. As this
+        is the size of hashtable length, a check is made if these lengths
+        are being modified. If yes, setHashStart() is called to store
+        section limits. */
+        void setHeadField(uint32_t fieldStart, uint32_t value);
+
+        /** Sets the fixed field starting at fieldStart to the needed value
+         * in the first record considering the actual record type. */
         void setHeadField(uint32_t fieldStart, uint64_t value);
 
         /** Gets the fixed field starting at fieldStart from the first record,
          * considering the actual record type. */
-        uint64_t getHeadField(uint32_t fieldStart);
+        uint64_t getHeadField(uint32_t fieldStart) const;
 
         /** Gathers the old keys from content. */
         std::deque<keyType> getKeys() const;
@@ -452,17 +553,17 @@ namespace udbgraph {
         /* Adds an edge to the indicated array and writes the changed records
          * to disk. If there was no more free space in the free array, inserts a
          * new record. */
-        void addEdge(keyType edgeKey, FieldPosNode where, ups_txn_t *tr);
+        void addEdge(keyType edgeKey, FieldPosNode which, ups_txn_t *tr);
 
-        /** Removes all records after the one pointed by iter. */
+        /** Removes all records after the one pointed by index. */
         void stripLeftover();
 
-        /** Reads the chain content to the requested level. Sets state according
+        /** Reads the chain content from DB to the requested level. Sets state according
          * the actual read stuff, e. g. if only head record existed, FULL. Throws
         exception if EMPTY was requested. */
-        void read(keyType key, ups_txn_t *tr, RCState level);
+        void load(keyType key, ups_txn_t *tr, RCState level);
 
-        /** Writes actual content into db, considering the old record keys in
+        /** Saves actual content into db, considering the old record keys in
          * oldKeys. The overlapping part with the content will be updated,
          * the plus content is inserted, or the surplus old records removed.
         @param oldKeys the old keys
@@ -470,7 +571,7 @@ namespace udbgraph {
         GraphElem must know the new key before calling GraphElem.insert, but
         the same value is needed for the first record.
         @param the UpscaleDB transaction to use. */
-        void write(std::deque<keyType> &oldKeys, keyType key, ups_txn_t *upsTr);
+        void save(std::deque<keyType> &oldKeys, keyType key, ups_txn_t *upsTr);
 
         /** Implementation: assembles a byte. */
         void write(uint8_t b);
@@ -478,15 +579,15 @@ namespace udbgraph {
         /** Writes this type if it fits in the record. Returns true if succeeded. */
         template<typename T>
         bool write(T t) {
-            size_t written = iter->write(t);
+            countType written = content[index].write(t);
             if(written == sizeof(t)) {
                 return true;
             }
             else {
                 if(written == 0) {
                     content.push_back(Record(RT_CONT, pType));
-                    iter++;
-                    iter->write(t);
+                    index++;
+                    content[index].write(t);
                     return true;
                 }
                 else {
@@ -505,17 +606,17 @@ namespace udbgraph {
         /** Reads this type if it fits in the record. Returns true if succeeded. */
         template<typename T>
         bool read(T &t) {
-            size_t read = iter->read(t);
+            countType read = content[index].read(t);
             if(read == sizeof(t)) {
                 return true;
             }
             else {
                 if(read == 0) {
-                    iter++;
-                    if(iter == content.end()) {
+                    index++;
+                    if(index == content.size()) {
                         throw DebugException("No more data in RecordChain to read.");
                     }
-                    iter->read(t);
+                    content[index].read(t);
                     return true;
                 }
                 else {
@@ -531,18 +632,46 @@ namespace udbgraph {
         void read(std::string &s, uint64_t len);
 
     protected:
-        /** Calculates the start of the first bucket
-         * array such that the array begins aligned to keyType. */
-        size_t calcHashesPad(RecordType recType);
-
-        /** Calculates the total number of keys in a bucket array.
+        /** Calculates the total number of keys in a bucket array, together with
+         * the fill space above the used buckets with prime count.
          * In order to let one array grow without affecting others or the payload,
          * each array is padded to a multiple of full record size + the minimal
          * possible bucket length. */
-        size_t calcHashLen(uint32_t buckets);
+        indexType calcHashLen(countType buckets) const noexcept;
 
         /** Calculates the payload start for a given head record. */
-        size_t calcPayloadStart(Record &rec);
+        indexType calcPayloadStart(Record &rec) const noexcept;
+
+        /** Fills hashStart* arrays using the bucket lengths in head field or the
+         * given Record if any. */
+        void setHashStart(const Record * const rec = nullptr);
+
+        /** Calculates the record and key positions for the given hash table
+         * and hash index. */
+        void calcTableIndices(FieldPosNode which, countType index, indexType &indRecord, countType &indKey) const;
+
+        /** Returns the bucket value at index for the given table. */
+        keyType getHashContent(FieldPosNode which, countType index) const;
+
+        /** Sets the bucket value at index for the given table.
+        @return the index of modified record in content. */
+        indexType setHashContent(FieldPosNode which, countType index, keyType key);
+
+        /** Calculates a hash table index for the given table, key and displacement. */
+        countType hash(FieldPosNode which, keyType key, countType disp);
+
+#ifdef DEBUG
+    public:
+        /** Fills the given hash table with test pattern. Available only for debugging. */
+        void fillHashTable(FieldPosNode which);
+
+        /** Tests the given hash table against a test pattern. Available only for debugging. */
+        void checkHashTable(FieldPosNode which);
+
+        /** Appends missing records such that hashStartRecord[RCS_PLAY] will point
+         * to the last one. */
+        void appendMissingRecords();
+#endif
     };
 
     /** A wrapper class for RecordChain to hide unnecessary parts from Payload providing

@@ -16,7 +16,7 @@ using namespace std;
 
 bool Unalignment::allowUnalign = false;
 
-uint32_t FixedFieldIO::pos2sizes[RT_NOMORE][FIELD_VAR_MAX_POS];
+countType FixedFieldIO::pos2sizes[RT_NOMORE][FIELD_VAR_MAX_POS];
 
 void FixedFieldIO::initStatic() noexcept {
     for(int i = 0; i < RT_NOMORE; i++) {
@@ -47,18 +47,45 @@ void FixedFieldIO::initStatic() noexcept {
     pos2sizes[RT_CONT][FPC_HEAD] = sizeof(keyType);
 }
 
-void FixedFieldIO::setField(uint32_t fieldStart, uint8_t value, uint8_t * const array) {
+void FixedFieldIO::setField(countType fieldStart, uint8_t value, uint8_t * const array) {
 #ifdef DEBUG
-    checkPosition(fieldStart, *array);
+    checkPosition(fieldStart, static_cast<RecordType>(*array), sizeof(value));
 #endif
     array[fieldStart] = value;
 }
 
-uint64_t FixedFieldIO::getField(uint32_t fieldStart, uint8_t * const array) {
+void FixedFieldIO::setField(countType fieldStart, uint16_t value, uint8_t * const array) {
 #ifdef DEBUG
-    checkPosition(fieldStart, *array);
+    checkPosition(fieldStart, static_cast<RecordType>(*array), sizeof(value));
 #endif
-    int len = pos2sizes[array[FP_RECORDTYPE]][fieldStart];
+    doSetField(fieldStart, value, array);
+}
+
+void FixedFieldIO::setField(countType fieldStart, uint32_t value, uint8_t * const array) {
+#ifdef DEBUG
+   checkPosition(fieldStart, static_cast<RecordType>(*array), sizeof(value));
+#endif
+   doSetField(fieldStart, value, array);
+}
+
+void FixedFieldIO::setField(countType fieldStart, uint64_t value, uint8_t * const array) {
+#ifdef DEBUG
+   checkPosition(fieldStart, static_cast<RecordType>(*array), sizeof(value));
+#endif
+   doSetField(fieldStart, value, array);
+}
+
+inline uint64_t FixedFieldIO::getField(countType fieldStart, uint8_t * const array) {
+#ifdef DEBUG
+   checkPosition(fieldStart, static_cast<RecordType>(*array));
+#endif
+   return doGetField(fieldStart, array);
+}
+
+uint64_t FixedFieldIO::doGetField(countType fieldStart, uint8_t * const array, uint8_t len) {
+    if(len == 0) {
+        len = pos2sizes[array[FP_RECORDTYPE]][fieldStart];
+    }
     union {
         uint64_t read;
         uint8_t bytes[sizeof(uint64_t)];
@@ -81,7 +108,6 @@ uint64_t FixedFieldIO::getField(uint32_t fieldStart, uint8_t * const array) {
                     read = *(reinterpret_cast<uint64_t*>(array + fieldStart));
                 }
             }
-
         }
         else {
             read = 0;
@@ -99,13 +125,18 @@ uint64_t FixedFieldIO::getField(uint32_t fieldStart, uint8_t * const array) {
     return read;
 }
 
-void FixedFieldIO::checkPosition(uint32_t fieldStart, int recordType) {
+void FixedFieldIO::checkPosition(countType fieldStart, RecordType recordType, uint8_t width) {
     if(recordType >= RT_NOMORE || fieldStart > FIELD_VAR_MAX_POS) {
         throw DebugException(string("Invalid record type (") + to_string(static_cast<int>(recordType)) +
                           string(") or field position (") + to_string(static_cast<int>(fieldStart)) +
                           string(") out of bounds.") );
     }
-    uint32_t len = pos2sizes[recordType][fieldStart];
+    countType len = pos2sizes[recordType][fieldStart];
+    if(width > 0 && width != len) {
+        throw DebugException(string("Invalid position (") + to_string(static_cast<int>(fieldStart)) +
+                          string(") required for record type: ") + to_string(static_cast<int>(recordType)) +
+                          string(" and type size: ") + to_string(static_cast<int>(width)));
+    }
     switch(len) {
     case sizeof(uint8_t):
     case sizeof(uint16_t):
@@ -120,24 +151,28 @@ void FixedFieldIO::checkPosition(uint32_t fieldStart, int recordType) {
     }
 }
 
-size_t RecordChain::Record::size = 0;
+countType RecordChain::Record::size = 0;
+
+countType RecordChain::Record::keysPerRecord = 0;
 
 constexpr uint32_t RecordChain::Record::recordVarStarts[RT_NOMORE];
 
-void RecordChain::Record::setSize(size_t s) {
+constexpr uint32_t RecordChain::Record::hashStarts[RT_NOMORE];
+
+void RecordChain::Record::setSize(countType s) {
 #ifndef DEBUG
     if(size == 0) {
 #endif
-        if(s <= FIELD_VAR_MAX_POS + 2 * sizeof(uint64_t) ||
-                s > UDB_MAX_RECORD_SIZE || s % sizeof(uint64_t) != 0) {
+        if(s <= hashStarts[RT_ROOT] + (1 + 3 * RecordChain::primes[0]) * sizeof(keyType) ||
+                s > UDB_MAX_RECORD_SIZE || s % sizeof(keyType) != 0) {
             throw DebugException("Invalid record size.");
         }
         size = s;
+        keysPerRecord = size / sizeof(keyType);
 #ifndef DEBUG
     }
 #endif
 }
-
 
 inline void RecordChain::Record::checkSize() {
     if(size == 0) {
@@ -153,6 +188,7 @@ RecordChain::Record::Record() :
     upsRecord.flags = upsRecord.partial_offset = upsRecord.partial_size = 0;
     upsRecord.size = 0;
     upsRecord.data = nullptr;
+    record[FP_RECORDTYPE] = static_cast<uint8_t>(RT_INVALID);
 }
 
 RecordChain::Record::Record(keyType k, const uint8_t * const rec) :
@@ -165,6 +201,7 @@ RecordChain::Record::Record(keyType k, const uint8_t * const rec) :
     upsRecord.data = nullptr;
     memcpy(record, rec, size);
     index = recordVarStarts[*record];
+    RecordType rt = static_cast<RecordType>(*record);
 }
 
 RecordChain::Record::Record(RecordType rt, payloadType pType) :
@@ -176,12 +213,18 @@ RecordChain::Record::Record(RecordType rt, payloadType pType) :
     upsRecord.size = size;
     upsRecord.data = record;
     // zero and invalidate everything
-    memset(record, 0, FIELD_VAR_MAX_POS);
-    record[FP_RECORDTYPE] = uint8_t(rt);
+    memset(record, 0, size);
+    record[FP_RECORDTYPE] = static_cast<uint8_t>(rt);
+    if(rt == RT_NODE || rt == RT_ROOT) {
+        // set bucket counts
+        setField(FPN_IN_BUCKETS, primes[0]);
+        setField(FPN_OUT_BUCKETS, primes[0]);
+        setField(FPN_UN_BUCKETS, primes[0]);
+    }
     setField(FP_PAYLOADTYPE, pType);
 }
 
-RecordChain::Record::Record(Record &&p) noexcept :
+RecordChain::Record::Record(RecordChain::Record &&p) noexcept :
     record(p.record), index(p.index), key(p.key), upsKey(p.upsKey), upsRecord(p.upsRecord) {
     p.record = nullptr;
     p.upsRecord.data = nullptr;
@@ -203,6 +246,24 @@ void RecordChain::Record::clone(const Record &other) noexcept {
     memcpy(record, other.record, size);
 }
 
+void RecordChain::Record::writeKey(countType pos, keyType key) {
+#ifdef DEBUG
+    if(pos >= keysPerRecord) {
+        throw DebugException("Illegal key index in record.");
+    }
+#endif
+    doSetField(pos * sizeof(keyType), key, record);
+}
+
+keyType RecordChain::Record::readKey(countType pos) const {
+#ifdef DEBUG
+    if(pos >= keysPerRecord) {
+        throw DebugException("Illegal key index in record.");
+    }
+#endif
+    return doGetField(pos * sizeof(keyType), record, sizeof(keyType));
+}
+
 inline bool RecordChain::Record::operator<<(const uint8_t byte) noexcept {
     if(index == size) {
         return false;
@@ -212,7 +273,7 @@ inline bool RecordChain::Record::operator<<(const uint8_t byte) noexcept {
 }
 
 inline uint64_t RecordChain::Record::write(const char *cp, uint64_t len) noexcept {
-    uint64_t written = min(len, size - index);
+    uint64_t written = min(len, static_cast<uint64_t>(size - index));
     strncpy(reinterpret_cast<char*>(record + index), cp, written);
     index += written;
     return written;
@@ -227,13 +288,13 @@ inline bool RecordChain::Record::operator>>(uint8_t &byte) noexcept {
 }
 
 inline uint64_t RecordChain::Record::read(char *cp, uint64_t len) noexcept {
-    uint64_t read = min(len, size - index);
+    uint64_t read = min(len, static_cast<uint64_t>(size - index));
     strncpy(cp, reinterpret_cast<char*>(record + index), read);
     index += read;
     return read;
 }
 
-ups_status_t RecordChain::Record::read(ups_db_t *db, keyType k, ups_txn_t *tr) noexcept {
+ups_status_t RecordChain::Record::load(ups_db_t *db, keyType k, ups_txn_t *tr) noexcept {
     key = k;
     ups_status_t result = ups_db_find(db, tr, &upsKey, &upsRecord, 0);
     if(result != UPS_KEY_NOT_FOUND) {
@@ -242,16 +303,21 @@ ups_status_t RecordChain::Record::read(ups_db_t *db, keyType k, ups_txn_t *tr) n
         record = new uint8_t[size];
         memcpy(record, upsRecord.data, size);
         index = recordVarStarts[*record];
+        RecordType rt = static_cast<RecordType>(*record);
     }
     return result;
 }
 
-void RecordChain::Record::write(ups_db_t *db, ups_txn_t *tr) {
+void RecordChain::Record::save(ups_db_t *db, ups_txn_t *tr) {
     uint32_t flags = UPS_OVERWRITE;
     upsRecord.size = size;
     upsRecord.data = record;
     check(ups_db_insert(db, tr, &upsKey, &upsRecord, flags));
 }
+
+uint32_t constexpr RecordChain::primes[];
+
+uint32_t constexpr RecordChain::primesLen;
 
 void RecordChain::setRecordSize(size_t s) {
     Record::setSize(s);
@@ -261,7 +327,10 @@ RecordChain::RecordChain(RecordType rt, payloadType pt) : pType(pt) {
     Record::checkSize();
     state = RCState::EMPTY;
     content.push_back(Record(rt, pt));
-    iter = content.begin();
+    if(rt == RT_NODE || rt == RT_ROOT) {
+        setHashStart();
+    }
+    reset();
 }
 
 void RecordChain::setHead(keyType key, const uint8_t * const rec) {
@@ -269,14 +338,23 @@ void RecordChain::setHead(keyType key, const uint8_t * const rec) {
     Record record(key, rec);
     pType = record.getField(FP_PAYLOADTYPE);
     content.push_back(move(record));
-    iter = content.begin();
+    index = 0;
     state = RCState::HEAD;
+    RecordType rt = static_cast<RecordType>(*rec);
+    if(rt == RT_NODE || rt == RT_ROOT) {
+        setHashStart();
+    }
+    reset();
 }
 
 void RecordChain::clone(const RecordChain &other) {
     state = other.state;
     pType = other.pType;
     // recordType must remain intact
+    for(int i = RCS_IN; i < RCS_NOMORE; i++) {
+        hashStartKey[i] = other.hashStartKey[i];
+        hashStartRecord[i] = other.hashStartRecord[i];
+    }
     auto itThis = content.begin();
     auto itOther = other.content.begin();
     while (itThis != content.end() && itOther != other.content.end()) {
@@ -297,35 +375,82 @@ void RecordChain::clone(const RecordChain &other) {
             itOther++;
         }
     }
+    RecordType rt = static_cast<RecordType>(content.begin()->getField(FP_RECORDTYPE));
+    if(rt == RT_NODE || rt == RT_ROOT) {
+        setHashStart();
+    }
     reset();
 }
 
 void RecordChain::reset() {
-    iter = content.begin();
+    index = 0;
     for(Record &rec : content) {
         rec.reset();
+    }
+    // root would not need it, but only in case
+    RecordType rt = static_cast<RecordType>(getHeadField(FP_RECORDTYPE));
+    if(rt == RT_NODE || rt == RT_ROOT) {
+        index = hashStartRecord[RCS_PAY];
+        content[index].setIndex(hashStartKey[RCS_PAY] * sizeof(keyType));
     }
 }
 
 void RecordChain::clear() {
-    RecordType rt = RecordType(getHeadField(FP_RECORDTYPE));
+    RecordType rt = static_cast<RecordType>(getHeadField(FP_RECORDTYPE));
     content.clear();
     content.push_back(Record(rt, pType));
-    iter = content.begin();
+    index = 0;
+    if(rt == RT_NODE || rt == RT_ROOT) {
+        setHashStart();
+    }
     state = RCState::EMPTY;
 }
 
-void RecordChain::setHeadField(uint32_t fieldStart, uint64_t value) {
+void RecordChain::setHeadField(uint32_t fieldStart, uint8_t value) {
+#ifdef DEBUG
     if(content.size() == 0) {
         throw DebugException("No record!");
     }
+#endif
     content.begin()->setField(fieldStart, value);
 }
 
-uint64_t RecordChain::getHeadField(uint32_t fieldStart) {
+void RecordChain::setHeadField(uint32_t fieldStart, uint16_t value) {
+#ifdef DEBUG
     if(content.size() == 0) {
         throw DebugException("No record!");
     }
+#endif
+    content.begin()->setField(fieldStart, value);
+}
+
+void RecordChain::setHeadField(uint32_t fieldStart, uint32_t value) {
+#ifdef DEBUG
+    if(content.size() == 0) {
+        throw DebugException("No record!");
+    }
+#endif
+    content.begin()->setField(fieldStart, value);
+    if(fieldStart == FPN_IN_BUCKETS || fieldStart == FPN_OUT_BUCKETS || fieldStart == FPN_UN_BUCKETS) {
+        setHashStart();
+    }
+}
+
+void RecordChain::setHeadField(uint32_t fieldStart, uint64_t value) {
+#ifdef DEBUG
+    if(content.size() == 0) {
+        throw DebugException("No record!");
+    }
+#endif
+    content.begin()->setField(fieldStart, value);
+}
+
+inline uint64_t RecordChain::getHeadField(uint32_t fieldStart) const {
+#ifdef DEBUG
+    if(content.size() == 0) {
+        throw DebugException("No record!");
+    }
+#endif
     return content.begin()->getField(fieldStart);
 }
 
@@ -337,19 +462,17 @@ deque<keyType> RecordChain::getKeys() const {
     return keys;
 }
 
-void RecordChain::addEdge(keyType edgeKey, FieldPosNode where, ups_txn_t *tr) {
+void RecordChain::addEdge(keyType edgeKey, FieldPosNode which, ups_txn_t *tr) {
 // TODO implement
 }
 
 void RecordChain::stripLeftover() {
     // terminate chain
-    iter->setField(FP_NEXT, KEY_INVALID);
-    for(iter++; iter != content.end();) {
-        iter = content.erase(iter);
-    }
+    content[index].setField(FP_NEXT, KEY_INVALID);
+    content.erase(content.begin() + index + 1, content.end());
 }
 
-void RecordChain::read(keyType key, ups_txn_t *tr, RCState level) {
+void RecordChain::load(keyType key, ups_txn_t *tr, RCState level) {
 RCState was = state;
     if(level == RCState::EMPTY) {
         throw DebugException("Cannot read no records (requested level = RCState::EMPTY).");
@@ -371,21 +494,21 @@ RCState was = state;
     if(key == KEY_INVALID) {
         throw DebugException("Trying to read an element for invalid key.");
     }
-    size_t desired = numeric_limits<size_t>::max(); // means all
-    size_t payloadStart = desired;
+    indexType desired = numeric_limits<indexType>::max(); // means all
+    indexType payloadStart = desired;
     RecordType recType;
     if(level == RCState::HEAD) {
         desired = 1;
     }
     if(state == RCState::HEAD && level == RCState::PARTIAL) {
-        recType = RecordType(content.begin()->getField(FP_RECORDTYPE));
+        recType = static_cast<RecordType>(content.begin()->getField(FP_RECORDTYPE));
         payloadStart = calcPayloadStart(*(content.begin()));
         desired = payloadStart = payloadStart / Record::getSize() + 1;
     }
     // for PARTIAL we must calculate from head
     while(true) {
         Record record;
-        ups_status_t result = record.read(db, key, tr);
+        ups_status_t result = record.load(db, key, tr);
         if(result == UPS_KEY_NOT_FOUND) {
             if(content.size() == 0) {
                 throw ExistenceException("The element cannot be read, might have been deleted meanwhile.");
@@ -395,7 +518,10 @@ RCState was = state;
             }
         }
         if(content.size() == 0) {
-            recType = RecordType(record.getField(FP_RECORDTYPE));
+            recType = static_cast<RecordType>(record.getField(FP_RECORDTYPE));
+            if(recType == RT_NODE || recType == RT_ROOT) {
+                setHashStart(&record);
+            }
             payloadStart = calcPayloadStart(record);
             payloadStart = payloadStart / Record::getSize() + 1;
             if(level == RCState::PARTIAL) {
@@ -426,10 +552,10 @@ RCState was = state;
             break;
         }
     }
-    iter = content.begin();
+    reset();
 }
 
-void RecordChain::write(deque<keyType> &oldKeys, keyType key, ups_txn_t *tr) {
+void RecordChain::save(deque<keyType> &oldKeys, keyType key, ups_txn_t *tr) {
     auto itThis = content.begin();
     auto itOther = oldKeys.begin();
     keyType newKey;
@@ -462,7 +588,7 @@ void RecordChain::write(deque<keyType> &oldKeys, keyType key, ups_txn_t *tr) {
         itPrev->setField(FP_NEXT, KEY_INVALID);
         itThis = newStart;
         while(itThis != content.end()) {
-            itThis->write(db, tr); // insert
+            itThis->save(db, tr); // insert
             itThis++;
         }
     }
@@ -488,7 +614,7 @@ void RecordChain::write(deque<keyType> &oldKeys, keyType key, ups_txn_t *tr) {
     itThis = content.begin();
     itOther = oldKeys.begin();
     while (itThis != content.end() && itOther != oldKeys.end()) {
-        itThis->write(db, tr); // update
+        itThis->save(db, tr); // update
         itThis++;
         itOther++;
     }
@@ -498,19 +624,19 @@ void RecordChain::write(uint8_t b) {
     if(state == RCState::EMPTY) {
         state = RCState::FULL;
     }
-    if(!(*iter << b)) {
+    if(!(content[index] << b)) {
         content.push_back(Record(RT_CONT, pType));
-        iter++;
-        *iter << b;
+        index++;
+        content[index] << b;
     }
 }
 
 void RecordChain::write(const char *cp, uint64_t len) {
     do {
-        uint64_t written = iter->write(cp, len);
+        uint64_t written = content[index].write(cp, len);
         if(written < len) {
             content.push_back(Record(RT_CONT, pType));
-            iter++;
+            index++;
         }
         len -= written;
         cp += written;
@@ -518,12 +644,12 @@ void RecordChain::write(const char *cp, uint64_t len) {
 }
 
 void RecordChain::read(uint8_t &b) {
-    if(iter != content.end()) {
-        if(*iter >> b) {
+    if(index != content.size()) {
+        if(content[index] >> b) {
             return;
         }
-        if(++iter != content.end()) {
-            *iter >> b;
+        if(++index != content.size()) {
+            content[index] >> b;
             return;
         }
     }
@@ -532,12 +658,12 @@ void RecordChain::read(uint8_t &b) {
 
 void RecordChain::read(char *cp, uint64_t len) {
     do {
-        if(iter == content.end()) {
+        if(index == content.size()) {
             throw DebugException("No more data in RecordChain to read.");
         }
-        uint64_t read = iter->read(cp, len);
+        uint64_t read = content[index].read(cp, len);
         if(read < len) {
-            iter++;
+            index++;
         }
         len -= read;
         cp += read;
@@ -548,14 +674,14 @@ void RecordChain::read(char *cp, uint64_t len) {
 void RecordChain::read(string &s, uint64_t len) {
     char *cp = new char[Record::getSize() + 1];
     do {
-        if(iter == content.end()) {
+        if(index == content.size()) {
             delete[] cp;
             throw DebugException("No more data in RecordChain to read.");
         }
-        uint64_t read = iter->read(cp, len);
+        uint64_t read = content[index].read(cp, len);
         cp[read] = 0;
         if(read < len) {
-            iter++;
+            index++;
         }
         len -= read;
         s += cp;
@@ -563,24 +689,22 @@ void RecordChain::read(string &s, uint64_t len) {
     delete[] cp;
 }
 
-size_t RecordChain::calcHashesPad(RecordType recType) {
-    return (Record::recordVarStarts[recType] + sizeof(keyType) - 1) /
-            sizeof(keyType) * sizeof(keyType);
+indexType RecordChain::calcHashLen(countType buckets) const noexcept {
+    // We use the whole record length, not only the space available for hash,
+    // because this way we get absolute positions in the record in caller functions.
+    indexType keysPerRecordBr = Record::getKeysPerRecord();
+    indexType keysPerRecordNet = keysPerRecordBr - Record::hashStarts[RT_CONT];
+    indexType firstPrime = primes[0];
+    return (buckets - firstPrime + keysPerRecordNet - 1) / keysPerRecordNet *
+            keysPerRecordBr + firstPrime;
 }
 
-size_t RecordChain::calcHashLen(uint32_t buckets) {
-    size_t keysPerRecord = Record::getSize() / sizeof(keyType);
-    // TODO change
-    unsigned M  = 5;
-    return (buckets - M + keysPerRecord - 1) / keysPerRecord * keysPerRecord + M;
-}
-
-size_t RecordChain::calcPayloadStart(Record &rec) {
-    RecordType recType = RecordType(rec.getField(FP_RECORDTYPE));
-    size_t payloadStart;
+indexType RecordChain::calcPayloadStart(Record &rec) const noexcept {
+    RecordType recType = static_cast<RecordType>(rec.getField(FP_RECORDTYPE));
+    indexType payloadStart;
     if(recType == RT_NODE || recType == RT_ROOT) {
-        payloadStart = calcHashesPad(recType);
-        size_t totalLen =
+        payloadStart = Record::hashStarts[recType] * sizeof(keyType);
+        indexType totalLen =
             calcHashLen(rec.getField(FPN_IN_BUCKETS)) +
             calcHashLen(rec.getField(FPN_OUT_BUCKETS)) +
             calcHashLen(rec.getField(FPN_UN_BUCKETS));
@@ -591,6 +715,113 @@ size_t RecordChain::calcPayloadStart(Record &rec) {
     }
     return payloadStart;
 }
+
+void RecordChain::setHashStart(const Record * const rec) {
+    RecordType rt;
+    countType bucketsIn, bucketsOut, bucketsUn;
+    if(rec == nullptr) {
+        rt = static_cast<RecordType>(getHeadField(FP_RECORDTYPE));
+        bucketsIn = static_cast<countType>(getHeadField(FPN_IN_BUCKETS));
+        bucketsOut = static_cast<countType>(getHeadField(FPN_OUT_BUCKETS));
+        bucketsUn = static_cast<countType>(getHeadField(FPN_UN_BUCKETS));
+    }
+    else {
+        rt = static_cast<RecordType>(rec->getField(FP_RECORDTYPE));
+        bucketsIn = static_cast<countType>(rec->getField(FPN_IN_BUCKETS));
+        bucketsOut = static_cast<countType>(rec->getField(FPN_OUT_BUCKETS));
+        bucketsUn = static_cast<countType>(rec->getField(FPN_UN_BUCKETS));
+    }
+    hashStartRecord[RCS_IN] = 0;
+    hashStartKey[RCS_IN] = Record::hashStarts[rt];
+    indexType nextStart = hashStartKey[RCS_IN] + calcHashLen(bucketsIn);
+    // We use the whole record length, not only the space available for hash,
+    // because this way we get absolute positions in the record in caller functions.
+    countType keysPerRecord = Record::getKeysPerRecord();
+    hashStartRecord[RCS_OUT] = nextStart / keysPerRecord;
+    hashStartKey[RCS_OUT] = nextStart % keysPerRecord;
+    nextStart += calcHashLen(bucketsOut);
+    hashStartRecord[RCS_UN] = nextStart / keysPerRecord;
+    hashStartKey[RCS_UN] = nextStart % keysPerRecord;
+    nextStart += calcHashLen(bucketsUn);
+    hashStartRecord[RCS_PAY] = nextStart / keysPerRecord;
+    hashStartKey[RCS_PAY] = nextStart % keysPerRecord;
+}
+
+inline void RecordChain::calcTableIndices(FieldPosNode which, countType index, indexType &indRecord, countType &indKey) const {
+#ifdef DEBUG
+    if(which != FPN_IN_BUCKETS && which != FPN_OUT_BUCKETS && which != FPN_UN_BUCKETS) {
+        throw DebugException("Invalid hash table specifier.");
+    }
+    if(index >= getHeadField(which)) {
+        throw DebugException("Hash index out of range.");
+    }
+#endif
+    countType section = (which - FPN_IN_BUCKETS) / FR_SPAN;
+    indexType startRecord = hashStartRecord[section];
+    countType startKey = hashStartKey[section];
+    countType keysPerRecordBr = Record::getKeysPerRecord();
+    if(index < keysPerRecordBr - startKey) {
+        indRecord = startRecord;
+        indKey = startKey + index;
+    }
+    else {
+        countType cntStart = Record::hashStarts[RT_CONT];
+        countType keysPerRecordNet = keysPerRecordBr - cntStart;
+        countType denom = startKey - cntStart + index;
+        indRecord = startRecord + denom / keysPerRecordNet;
+        indKey = cntStart + denom % keysPerRecordNet;
+    }
+#ifdef DEBUG
+    if(indKey >= keysPerRecordBr || indRecord >= content.size()) {
+        throw DebugException("Calculated table indices are out of range.");
+    }
+#endif
+}
+
+keyType RecordChain::getHashContent(FieldPosNode which, countType index) const {
+    indexType indRecord;
+    countType indKey;
+    calcTableIndices(which, index, indRecord, indKey);
+    return content[indRecord].readKey(indKey);
+}
+
+indexType RecordChain::setHashContent(FieldPosNode which, countType index, keyType key) {
+    indexType indRecord;
+    countType indKey;
+    calcTableIndices(which, index, indRecord, indKey);
+    content[indRecord].writeKey(indKey, key);
+    return indRecord;
+}
+
+countType RecordChain::hash(FieldPosNode which, keyType key, countType disp) {
+    indexType buckets = getHeadField(which);
+    return static_cast<countType>((key % buckets + disp * (1 + key % (buckets - 1))) % buckets);
+}
+
+#ifdef DEBUG
+void RecordChain::fillHashTable(FieldPosNode which) {
+    countType len = getHeadField(which);
+    for(countType i = 0; i < len; i++) {
+        setHashContent(which, i, primes[primesLen - 1] - i);
+    }
+}
+
+void RecordChain::checkHashTable(FieldPosNode which) {
+    countType len = getHeadField(which);
+    for(countType i = 0; i < len; i++) {
+        if(getHashContent(which, i) != primes[primesLen - 1] - i) {
+            throw DebugException("Value mismatch during hash table check.");
+        }
+    }
+}
+
+void RecordChain::appendMissingRecords() {
+    while(content.size() <= hashStartRecord[RCS_PAY]) {
+        content.push_back(Record(RT_CONT, getHeadField(FP_PAYLOADTYPE)));
+    }
+}
+
+#endif
 
 Converter& Converter::operator>>(int8_t& b) {
     uint8_t t;

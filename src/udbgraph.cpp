@@ -355,7 +355,7 @@ shared_ptr<GraphElem> Database::doBareRead(keyType key, RCState level, ups_txn_t
         throw ExistenceException("Requested graph element not found in the database.");
     }
     check(result);
-    RecordType recType = RecordType(FixedFieldIO::getField(FP_RECORDTYPE, reinterpret_cast<uint8_t *>(upsRecord.data)));
+    RecordType recType = static_cast<RecordType>(FixedFieldIO::getField(FP_RECORDTYPE, reinterpret_cast<uint8_t *>(upsRecord.data)));
     shared_ptr<GraphElem> ret;
     if(recType == RT_ROOT) {
         shared_ptr<GraphElem> root(new Root(shared_from_this(), 0, 0, ""));
@@ -516,7 +516,7 @@ void GraphElem::serialize(ups_txn_t *tr) {
     chainNew.reset();
     payload->serialize(converter);
     chainNew.stripLeftover();
-    chainNew.write(oldKeys, key, tr);
+    chainNew.save(oldKeys, key, tr);
 }
 
 void GraphElem::checkBeforeWrite() {
@@ -526,7 +526,7 @@ void GraphElem::checkBeforeWrite() {
 }
 
 void GraphElem::read(ups_txn_t *tr, RCState level) {
-    chainOrig.read(key, tr, level);
+    chainOrig.load(key, tr, level);
     chainNew.clone(chainOrig);
     if(level == RCState::FULL) {
         state = GEState::CC;
@@ -570,7 +570,7 @@ void GraphElem::endTrans(TransactionEnd te) {
 void AbstractNode::addEdge(keyType edgeKey, FieldPosNode where, ups_txn_t *tr) {
     if(chainNew.getState() < RCState::PARTIAL) {
         // make sure we have the edge arrays
-        chainNew.read(key, tr, RCState::PARTIAL);
+        chainNew.load(key, tr, RCState::PARTIAL);
     }
     chainNew.addEdge(edgeKey, where, tr);
 }
@@ -605,9 +605,9 @@ void Root::writeFixed() {
         end = APP_NAME_LENGTH - 1;
     }
     for(i = 0; i < end; i++) {
-        chainNew.setHeadField(FPR_APP_NAME + i, appName[i]);
+        chainNew.setHeadField(FPR_APP_NAME + i, static_cast<uint8_t>(appName[i]));
     }
-    chainNew.setHeadField(FPR_APP_NAME + i, 0);
+    chainNew.setHeadField(FPR_APP_NAME + i, static_cast<uint8_t>(0));
 }
 
 void Edge::setEnds(shared_ptr<GraphElem> &start, shared_ptr<GraphElem> &end) {

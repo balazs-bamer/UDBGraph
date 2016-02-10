@@ -2,6 +2,7 @@
 COPYRIGHT COMES HERE
 */
 
+#include<csignal>
 #include<cstring>
 #include<iostream>
 #include"udbgraph.h"
@@ -12,6 +13,11 @@ COPYRIGHT COMES HERE
 
 using namespace udbgraph;
 using namespace std;
+
+/** SIGSEGV handler, throws a DebugException. */
+extern void handleSigsegv(int sig) {
+    throw DebugException("SIGSEGV!");
+}
 
 void UPS_CALLCONV udbgraphErrorHandler(int level, const char *message) {
     cerr << "udbgraphErrorHandler: " << level << ": " << message << endl;
@@ -177,6 +183,7 @@ int main(int argc, char** argv) {
 #if USE_NVWA == 1
     nvwa::new_progname = argv[0];
 #endif
+	signal(SIGSEGV, handleSigsegv);
 	InitStatic globalStaticInitializer;
 	Database::setErrorHandler(udbgraphErrorHandler);
 	notReady();

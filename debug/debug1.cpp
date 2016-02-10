@@ -4,6 +4,7 @@ COPYRIGHT COMES HERE
 
 #include<cstdio>
 #include<cstring>
+#include<csignal>
 #include<iostream>
 #include<deque>
 #include"serializer.h"
@@ -13,8 +14,19 @@ COPYRIGHT COMES HERE
 #include"debug_new.h"
 #endif
 
+#ifndef DEBUG
+#error "Testing needs debug functions."
+#endif
+
 using namespace std;
 using namespace udbgraph;
+
+bool diskBased = false;
+
+/** SIGSEGV handler, throws a DebugException. */
+extern void handleSigsegv(int sig) {
+	throw DebugException("SIGSEGV!");
+}
 
 // caller should delete the returned pointer
 char* makeTestFill(int l) {
@@ -131,8 +143,16 @@ void serializeInplace(int offset) {
 		_f != f || _d != d || strcmp(ca, _ca) || s != _s) {
 		cout << "serializeInplace(" << offset <<"): mismatch\n";
 	}
-	delete[] _ca;
-    
+	delete[] _ca;    
+}
+
+void testSerialize() {
+    serializeInplace(0);
+    serializeInplace(1010);
+    serializeInplace(1000);
+    serializeInplace(980);
+    serializeInplace(2000);
+    serializeInplace(3000);
 }
 
 void testAlign(int pad, uint64_t count) {
@@ -217,19 +237,18 @@ void writeKeys(deque<keyType> &&keys, const char * const label) {
 
 //#define COUT_LOADSAVE
 
-// if edges==-1, edge, otherwise node
-void loadsave(int edges, int payLen, bool readOnce, uint64_t recordSize) {
+void loadSave(bool isNode, countType edgesIn, countType edgesOut, countType edgesUn, int payLen, bool readOnce, uint64_t recordSize) {
 #ifdef COUT_LOADSAVE
-	cout << "edges: " << edges << "  payLen: " << payLen << "  readOnce: " << readOnce << "  recordSize: " << recordSize << '\n';
+	cout << "Node: " << isNode << "  In: " << edgesIn << "  Out: " << edgesOut << "  Un: " << edgesUn << "  payLen: " << payLen << "  readOnce: " << readOnce << "  recordSize: " << recordSize << '\n';
 #endif
 	// create database and record chain
 	char filename[] = "test-load-save.udbg";
 	RecordChain::setRecordSize(recordSize);
     ups_env_t *env = nullptr;
     ups_db_t *db = nullptr;
-	uint32_t flags = UPS_ENABLE_TRANSACTIONS | /*UPS_FLUSH_WHEN_COMMITTED |*/ UPS_ENABLE_CRC32;
+	uint32_t flags = UPS_ENABLE_TRANSACTIONS | /*UPS_FLUSH_WHEN_COMMITTED |*/ (!diskBased ? UPS_IN_MEMORY : UPS_ENABLE_CRC32);
     ups_parameter_t param[] = {
-        {UPS_PARAM_CACHE_SIZE, 64 * 1024 * 1024 },
+        {UPS_PARAM_CACHE_SIZE, static_cast<uint64_t>(diskBased ? 64 * 1024 * 1024 : 0) },
         {UPS_PARAM_POSIX_FADVISE, UPS_POSIX_FADVICE_NORMAL},
       //  {UPS_PARAM_ENABLE_JOURNAL_COMPRESSION, 1},
         {0, 0}
@@ -254,7 +273,6 @@ void loadsave(int edges, int payLen, bool readOnce, uint64_t recordSize) {
     check(ups_txn_begin(&tr, env, nullptr, nullptr, 0));
     RecordChain::setRecordSize(recordSize);
     KeyGenerator<keyType> *keygen = new KeyGenerator<keyType>(KEY_ROOT);
-	bool isNode = edges >= 0;
 	RecordChain rc(isNode ? RT_NODE : RT_DEDGE, 4);
 	rc.setKeyGen(keygen);
 	rc.setDB(db);
@@ -262,23 +280,27 @@ void loadsave(int edges, int payLen, bool readOnce, uint64_t recordSize) {
 
 	// fill record chain
 	if(isNode) {
-		rc.setHeadField(FPN_IN_BUCKETS, edges);
-		for(keyType i = 1; i <= edges; i++) {
-			conv << i;
-		}
+		rc.setHeadField(FPN_IN_BUCKETS, edgesIn);
+		rc.setHeadField(FPN_OUT_BUCKETS, edgesOut);
+		rc.setHeadField(FPN_UN_BUCKETS, edgesUn);
+		rc.appendMissingRecords();
+                rc.reset();	// hash table sizes changed
+                rc.fillHashTable(FPN_IN_BUCKETS);
+		rc.fillHashTable(FPN_OUT_BUCKETS);
+		rc.fillHashTable(FPN_UN_BUCKETS);
 	}
 	char *testFill = makeTestFill(payLen);
 	conv << testFill;
 
-	// write record chain
+	// save record chain
 	std::deque<keyType> oldKeys;
 	keyType key = keygen->nextKey();
-	rc.write(oldKeys, key, tr);
+	rc.save(oldKeys, key, tr);
 
 	// load record chain
 	rc.clear();
 	if(readOnce) {
-		rc.read(key, tr, RCState::FULL);
+		rc.load(key, tr, RCState::FULL);
 		if(isNode) {
 #ifdef COUT_LOADSAVE
 			cout << "edge count: " << rc.getHeadField(FPN_CNT_INEDGE) << '\n';
@@ -286,7 +308,7 @@ void loadsave(int edges, int payLen, bool readOnce, uint64_t recordSize) {
 		}
 	}
 	else {
-		rc.read(key, tr, RCState::HEAD);
+		rc.load(key, tr, RCState::HEAD);
 		if(isNode) {
 #ifdef COUT_LOADSAVE
 			cout << "edge count: " << rc.getHeadField(FPN_CNT_INEDGE) << '\n';
@@ -295,11 +317,11 @@ void loadsave(int edges, int payLen, bool readOnce, uint64_t recordSize) {
 #ifdef COUT_LOADSAVE
 		writeKeys(rc.getKeys(), "   head");
 #endif
-		rc.read(key, tr, RCState::PARTIAL);
+		rc.load(key, tr, RCState::PARTIAL);
 #ifdef COUT_LOADSAVE
 		writeKeys(rc.getKeys(), "partial");
 #endif
-		rc.read(key, tr, RCState::FULL);
+		rc.load(key, tr, RCState::FULL);
 	}
 #ifdef COUT_LOADSAVE
 	writeKeys(rc.getKeys(), "   full");
@@ -307,26 +329,19 @@ void loadsave(int edges, int payLen, bool readOnce, uint64_t recordSize) {
 
 	// check result
 	if(isNode) {
-		for(keyType i = 1; i <= edges; i++) {
-			keyType key;
-			conv >> key;
-			if(key != i) {
-				cout << "edges: " << edges << "  payLen: " << payLen << "  readOnce: " << readOnce << "  recordSize: " << recordSize << '\n';
-				cout << "expected edge key: " << i << ", but got: " << key << '\n';
-			}
-		}
+		rc.checkHashTable(FPN_IN_BUCKETS);
+		rc.checkHashTable(FPN_OUT_BUCKETS);
+		rc.checkHashTable(FPN_UN_BUCKETS);
 	}
 	char* result;
 	conv >> result;
 	for(int i = 0; i < payLen; i++) {
 		char res = result[i];
 		if(res == 0) {
-			cout << "edges: " << edges << "  payLen: " << payLen << "  readOnce: " << readOnce << "  recordSize: " << recordSize << '\n';
 			cout << "premature end at: " << i << '\n';
 			break;
 		}
 		if(res != testFill[i]) {
-			cout << "edges: " << edges << "  payLen: " << payLen << "  readOnce: " << readOnce << "  recordSize: " << recordSize << '\n';
 			cout << "expected char: " << int(testFill[i]) << ", but got: " << int(res) << '\n';
 		}
 	}
@@ -344,131 +359,43 @@ void loadsave(int edges, int payLen, bool readOnce, uint64_t recordSize) {
     check(ups_env_close(env, flags));
 }
 
+void testLoadSave() {
+//void loadsave(bool isNode, int edgesIn, int edgesOut, int edgesUn, int payLen, bool readOnce, uint64_t recordSize) {
+	int recordSizes[] = {1024, 256};
+	int payloadSizes[] = {0, 10, 800, 1800, 3800};
+	int hashTableSizes[2][5] = {{5, 29, 31, 59, 61}, {5, 127, 129, 251, 253}};
+//	int hashTableSizes[2][3] = {{5, 31, 61}, {5, 129, 253}};
+	for(int rs : recordSizes) {
+		for(int p : payloadSizes) {
+			for(int r1 = 0; r1 < 2; r1++) {
+				loadSave(false, 0, 0, 0, p, r1 == 1, rs);
+				for(int i : hashTableSizes[rs == 256 ? 0 : 1]) {
+					for(int o : hashTableSizes[rs == 256 ? 0 : 1]) {
+						for(int u : hashTableSizes[rs == 256 ? 0 : 1]) {
+							loadSave(true, i, o, u, p, r1 == 1, rs);
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
 int main(int argc, char** argv) {
 #if USE_NVWA == 1
     nvwa::new_progname = argv[0];
 #endif
+	diskBased = argc > 1 && !strcmp(argv[1], "-d");
+	signal(SIGSEGV, handleSigsegv);
 	RecordChain::setRecordSize(UDB_DEF_RECORD_SIZE);
 	EndianInfo::initStatic();
     FixedFieldIO::initStatic();
     GEFactory::initStatic();
-	cout << "START" << endl;
-    serializeInplace(0);
-    serializeInplace(1010);
-    serializeInplace(1000);
-    serializeInplace(980);
-    serializeInplace(2000);
-    serializeInplace(3000);
+	cout << "-d means disk-based UpscaleDB, now " << (diskBased ? "disk" : "memory") << " based." << endl;
+	testSerialize();
 	testAlignment();
 	testFixedIO();
 	testCounterMap();
-//	loadsave(int edges, int payLen, bool readOnce, int recordSize) {
-	loadsave(-1, 0, true, 1024);
-	loadsave(5, 0, true, 1024);
-	loadsave(10, 0, true, 1024);
-	loadsave(100, 0, true, 1024);
-	loadsave(200, 0, true, 1024);
-	loadsave(300, 0, true, 1024);
-	loadsave(-1, 10, true, 1024);
-	loadsave(0, 10, true, 1024);
-	loadsave(10, 10, true, 1024);
-	loadsave(100, 10, true, 1024);
-	loadsave(200, 10, true, 1024);
-	loadsave(300, 10, true, 1024);
-	loadsave(-1, 800, true, 1024);
-	loadsave(0, 800, true, 1024);
-	loadsave(10, 800, true, 1024);
-	loadsave(100, 800, true, 1024);
-	loadsave(200, 800, true, 1024);
-	loadsave(300, 800, true, 1024);
-	loadsave(-1, 1800, true, 1024);
-	loadsave(0, 1800, true, 1024);
-	loadsave(10, 1800, true, 1024);
-	loadsave(100, 1800, true, 1024);
-	loadsave(200, 1800, true, 1024);
-	loadsave(300, 1800, true, 1024);
-	loadsave(-1, 3800, true, 1024);
-	loadsave(0, 3800, true, 1024);
-	loadsave(10, 3800, true, 1024);
-	loadsave(100, 3800, true, 1024);
-	loadsave(200, 3800, true, 1024);
-	loadsave(300, 3800, true, 1024);
-	loadsave(-1, 0, false, 1024);
-	loadsave(0, 0, false, 1024);
-	loadsave(10, 0, false, 1024);
-	loadsave(100, 0, false, 1024);
-	loadsave(200, 0, false, 1024);
-	loadsave(300, 0, false, 1024);
-	loadsave(-1, 10, false, 1024);
-	loadsave(0, 10, false, 1024);
-	loadsave(10, 10, false, 1024);
-	loadsave(100, 10, false, 1024);
-	loadsave(200, 10, false, 1024);
-	loadsave(300, 10, false, 1024);
-	loadsave(-1, 800, false, 1024);
-	loadsave(0, 800, false, 1024);
-	loadsave(10, 800, false, 1024);
-	loadsave(100, 800, false, 1024);
-	loadsave(200, 800, false, 1024);
-	loadsave(300, 800, false, 1024);
-	loadsave(-1, 1800, false, 1024);
-	loadsave(0, 1800, false, 1024);
-	loadsave(10, 1800, false, 1024);
-	loadsave(100, 1800, false, 1024);
-	loadsave(200, 1800, false, 1024);
-	loadsave(300, 1800, false, 1024);
-	loadsave(0, 3800, false, 1024);
-	loadsave(10, 3800, false, 1024);
-	loadsave(100, 3800, false, 1024);
-	loadsave(200, 3800, false, 1024);
-	loadsave(300, 3800, false, 1024);
-	loadsave(-1, 0, true, 128);
-	loadsave(0, 0, true, 128);
-	loadsave(10, 0, true, 128);
-	loadsave(100, 0, true, 128);
-	loadsave(200, 0, true, 128);
-	loadsave(300, 0, true, 128);
-	loadsave(-1, 10, true, 128);
-	loadsave(0, 10, true, 128);
-	loadsave(10, 10, true, 128);
-	loadsave(100, 10, true, 128);
-	loadsave(200, 10, true, 128);
-	loadsave(300, 10, true, 128);
-	loadsave(-1, 800, true, 128);
-	loadsave(0, 800, true, 128);
-	loadsave(10, 800, true, 128);
-	loadsave(100, 800, true, 128);
-	loadsave(200, 800, true, 128);
-	loadsave(300, 800, true, 128);
-	loadsave(-1, 1800, true, 128);
-	loadsave(0, 1800, true, 128);
-	loadsave(10, 1800, true, 128);
-	loadsave(100, 1800, true, 128);
-	loadsave(200, 1800, true, 128);
-	loadsave(300, 1800, true, 128);
-	loadsave(-1, 0, false, 128);
-	loadsave(0, 0, false, 128);
-	loadsave(10, 0, false, 128);
-	loadsave(100, 0, false, 128);
-	loadsave(200, 0, false, 128);
-	loadsave(300, 0, false, 128);
-	loadsave(-1, 10, false, 128);
-	loadsave(0, 10, false, 128);
-	loadsave(10, 10, false, 128);
-	loadsave(100, 10, false, 128);
-	loadsave(200, 10, false, 128);
-	loadsave(300, 10, false, 128);
-	loadsave(-1, 800, false, 128);
-	loadsave(0, 800, false, 128);
-	loadsave(10, 800, false, 128);
-	loadsave(100, 800, false, 128);
-	loadsave(200, 800, false, 128);
-	loadsave(300, 800, false, 128);
-	loadsave(-1, 1800, false, 128);
-	loadsave(0, 1800, false, 128);
-	loadsave(10, 1800, false, 128);
-	loadsave(100, 1800, false, 128);
-	loadsave(200, 1800, false, 128);
-	loadsave(300, 1800, false, 128);
+	testLoadSave();
     return 0;
 }
