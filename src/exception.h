@@ -159,6 +159,12 @@ in order to preserve polimorphism.*/
     public:
         IllegalArgumentException(const char * const cp) noexcept : GraphException("IllegalArgumentException", cp) {}
     };
+
+    /** Exception for reporting illegal quantities or sizes. */
+    class IllegalQuantityException : public GraphException {
+    public:
+        IllegalQuantityException(const char * const cp) noexcept : GraphException("IllegalQuantityException", cp) {}
+    };
 }
 
 #endif

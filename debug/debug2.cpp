@@ -30,7 +30,10 @@ void notReady() {
 		db->write(node);
 	}
 	catch(exception &e) {
-		cout << "notReady (expected): " << e.what() << endl;
+		const char * const what = e.what();
+		if(strstr(what, "Record size was not set") == nullptr) {
+			cout << "notReady: " << e.what() << endl;
+		}
 	}
 }
 
@@ -65,7 +68,10 @@ void verMismatch() {
 		db->open("debug2a.udbg");
 	}
 	catch(exception &e) {
-		cout << "verMismatch (expected): " << e.what() << endl;
+		const char * const what = e.what();
+		if(strstr(what, "Invalid version or application name") == nullptr) {
+			cout << "verMismatch: " << e.what() << endl;
+		}
 	}
 }
 
@@ -75,7 +81,10 @@ void nameMismatch() {
 		db->open("debug2a.udbg");
 	}
 	catch(exception &e) {
-		cout << "nameMismatch (expected): " << e.what() << endl;
+		const char * const what = e.what();
+		if(strstr(what, "Invalid version or application name") == nullptr) {
+			cout << "nameMismatch: " << e.what() << endl;
+		}
 	}
 }
 
@@ -102,7 +111,7 @@ public:
 	static void setID(payloadType pt) { _staticType = pt; }
 
 	/** Used in GEFactory to create a shared_ptr holding a new class instance. */
-	static shared_ptr<GraphElem> create(shared_ptr<Database> db, payloadType pt) {
+	static shared_ptr<GraphElem> create(shared_ptr<Database> &db, payloadType pt) {
 		return shared_ptr<GraphElem>(new Node(db, std::unique_ptr<Payload>(new MoreWritesPerTrans(pt))));
 	}
 
@@ -178,6 +187,115 @@ void moreWritesPerTrans() {
 		cout << "singleInsertOpen: " << e.what() << endl;
 	}
 }
+	
+/** Creates edges leading from node to root. */
+void hashTableInsertsIn(shared_ptr<Database> &db, Transaction &tr, shared_ptr<GraphElem> &node, int n) {
+	for(int i = 0; i < n; i++) {
+		shared_ptr<GraphElem> edge = GEFactory::create(db, PT_EMPTY_DEDGE);
+		edge->setStartRootEnd(node);
+		db->write(edge, tr);
+	}
+}
+
+/** Creates edges leading from root to node. */
+void hashTableInsertsOut(shared_ptr<Database> &db, Transaction &tr, shared_ptr<GraphElem> &node, int n) {
+	for(int i = 0; i < n; i++) {
+		shared_ptr<GraphElem> edge = GEFactory::create(db, PT_EMPTY_DEDGE);
+		edge->setEndRootStart(node);
+		db->write(edge, tr);
+	}
+}
+
+/** Creates undirected edges between node and root. */
+void hashTableInsertsUn(shared_ptr<Database> &db, Transaction &tr, shared_ptr<GraphElem> &node, int n) {
+	for(int i = 0; i < n; i++) {
+		shared_ptr<GraphElem> edge = GEFactory::create(db, PT_EMPTY_UEDGE);
+		edge->setStartRootEnd(node);
+		db->write(edge, tr);
+	}
+}
+
+typedef void HashTableFuncComb(shared_ptr<Database> &db, Transaction &tr, shared_ptr<GraphElem> &node, int n);
+
+void hashTableInserts(string namePref, HashTableFuncComb *func, int n) {
+	try {
+		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
+		db->create(namePref + '-' + to_string(n) + ".udbg", 0644);
+		shared_ptr<GraphElem> node = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
+		Transaction tr = db->beginTrans();
+		db->write(node, tr);
+		func(db, tr, node, n);
+		tr.commit();
+		db->close();
+	}
+	catch(exception &e) {
+		cout << "hashTableInsert01: " << e.what() << endl;
+	}
+}
+
+void hashTableInsertsI(shared_ptr<Database> &db, Transaction &tr, shared_ptr<GraphElem> &node, int n) {
+	hashTableInsertsIn(db, tr, node, n);
+}
+
+void hashTableInsertsO(shared_ptr<Database> &db, Transaction &tr, shared_ptr<GraphElem> &node, int n) {
+	hashTableInsertsOut(db, tr, node, n);
+}
+
+void hashTableInsertsU(shared_ptr<Database> &db, Transaction &tr, shared_ptr<GraphElem> &node, int n) {
+	hashTableInsertsUn(db, tr, node, n);
+}
+
+void hashTableInsertsIO(shared_ptr<Database> &db, Transaction &tr, shared_ptr<GraphElem> &node, int n) {
+	hashTableInsertsIn(db, tr, node, n);
+	hashTableInsertsOut(db, tr, node, n);
+}
+
+void hashTableInsertsOI(shared_ptr<Database> &db, Transaction &tr, shared_ptr<GraphElem> &node, int n) {
+	hashTableInsertsOut(db, tr, node, n);
+	hashTableInsertsIn(db, tr, node, n);
+}
+
+void hashTableInsertsIU(shared_ptr<Database> &db, Transaction &tr, shared_ptr<GraphElem> &node, int n) {
+	hashTableInsertsIn(db, tr, node, n);
+	hashTableInsertsUn(db, tr, node, n);
+}
+
+void hashTableInsertsUI(shared_ptr<Database> &db, Transaction &tr, shared_ptr<GraphElem> &node, int n) {
+	hashTableInsertsUn(db, tr, node, n);
+	hashTableInsertsIn(db, tr, node, n);
+}
+
+void hashTableInsertsOU(shared_ptr<Database> &db, Transaction &tr, shared_ptr<GraphElem> &node, int n) {
+	hashTableInsertsOut(db, tr, node, n);
+	hashTableInsertsUn(db, tr, node, n);
+}
+
+void hashTableInsertsUO(shared_ptr<Database> &db, Transaction &tr, shared_ptr<GraphElem> &node, int n) {
+	hashTableInsertsUn(db, tr, node, n);
+	hashTableInsertsOut(db, tr, node, n);
+}
+
+void hashTableInsertsIOU(shared_ptr<Database> &db, Transaction &tr, shared_ptr<GraphElem> &node, int n) {
+	hashTableInsertsIn(db, tr, node, n);
+	hashTableInsertsOut(db, tr, node, n);
+	hashTableInsertsUn(db, tr, node, n);
+}
+
+void hashTableInserts() {
+	for(int e = 0; e < 10; e++) {
+		int n = 1 << e;
+		hashTableInserts("debug2-i", hashTableInsertsI, n);
+		hashTableInserts("debug2-o", hashTableInsertsO, n);
+		hashTableInserts("debug2-u", hashTableInsertsU, n);
+		hashTableInserts("debug2-io", hashTableInsertsIO, n);
+		hashTableInserts("debug2-oi", hashTableInsertsOI, n);
+		hashTableInserts("debug2-iu", hashTableInsertsIU, n);
+		hashTableInserts("debug2-ui", hashTableInsertsUI, n);
+		hashTableInserts("debug2-uo", hashTableInsertsUO, n);
+		hashTableInserts("debug2-ou", hashTableInsertsOU, n);
+		hashTableInserts("debug2-iou", hashTableInsertsIOU, n);
+	}
+}
 
 int main(int argc, char** argv) {
 #if USE_NVWA == 1
@@ -192,5 +310,7 @@ int main(int argc, char** argv) {
 	verMismatch();
 	nameMismatch();
 	moreWritesPerTrans();
+	hashTableInserts();
+// TODO test edge update, edge creation checks
     return 0;
 }

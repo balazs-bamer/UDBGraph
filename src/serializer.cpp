@@ -6,6 +6,10 @@ COPYRIGHT COMES HERE
 #include<algorithm>
 #include"serializer.h"
 
+#ifdef DEBUG
+#include<iostream>
+#endif
+
 #if USE_NVWA == 1
 #include"debug_new.h"
 #endif
@@ -224,6 +228,13 @@ RecordChain::Record::Record(RecordType rt, payloadType pType) :
     setField(FP_PAYLOADTYPE, pType);
 }
 
+/*RecordChain::Record::Record(const RecordChain::Record &p) :
+    record(new uint8_t[size]), index(p.index), key(KEY_INVALID), upsKey(p.upsKey), upsRecord(p.upsRecord) {
+    memcpy(record, p.record, size);
+    upsRecord.data = record;
+    upsKey.data = &key;
+}*/
+
 RecordChain::Record::Record(RecordChain::Record &&p) noexcept :
     record(p.record), index(p.index), key(p.key), upsKey(p.upsKey), upsRecord(p.upsRecord) {
     p.record = nullptr;
@@ -231,8 +242,21 @@ RecordChain::Record::Record(RecordChain::Record &&p) noexcept :
     upsKey.data = &key;
 }
 
+/*RecordChain::Record& RecordChain::Record::operator=(const RecordChain::Record &p) noexcept {
+    upsRecord = p.upsRecord;
+    index = p.index;
+    key = KEY_INVALID;
+    upsKey = p.upsKey;
+    memcpy(record, p.record, size);
+    upsRecord.data = record;
+    upsKey.data = &key;
+    return *this;
+}*/
+
 RecordChain::Record& RecordChain::Record::operator=(RecordChain::Record &&p) noexcept {
-    upsRecord.data = record = p.record;
+    upsRecord = p.upsRecord;
+    upsKey = p.upsKey;
+    record = p.record;
     index = p.index;
     key = p.key;
     p.record = nullptr;
@@ -296,11 +320,13 @@ inline uint64_t RecordChain::Record::read(char *cp, uint64_t len) noexcept {
 
 ups_status_t RecordChain::Record::load(ups_db_t *db, keyType k, ups_txn_t *tr) noexcept {
     key = k;
+    memset(&upsRecord, 0, sizeof(upsRecord));
     ups_status_t result = ups_db_find(db, tr, &upsKey, &upsRecord, 0);
     if(result != UPS_KEY_NOT_FOUND) {
         check(result);
-        delete[] record;
-        record = new uint8_t[size];
+/* 	TODO check if needed
+ *   delete[] record;
+        record = new uint8_t[size];*/
         memcpy(record, upsRecord.data, size);
         index = recordVarStarts[*record];
         RecordType rt = static_cast<RecordType>(*record);
@@ -313,6 +339,30 @@ void RecordChain::Record::save(ups_db_t *db, ups_txn_t *tr) {
     upsRecord.size = size;
     upsRecord.data = record;
     check(ups_db_insert(db, tr, &upsKey, &upsRecord, flags));
+}
+
+countType RecordChain::Record::hashInit(countType startKeyInd, countType remaining) noexcept {
+    keyType *hashTable = reinterpret_cast<keyType*>(record);
+    countType i = startKeyInd;
+    countType ret = 0;
+    for(; i < keysPerRecord && ret < remaining; i++, ret++) {
+        hashTable[i] = HASH_FREE;
+    }
+    return ret;
+}
+
+countType RecordChain::Record::hashCollect(countType startKeyInd, keyType *&dest, countType remaining) const noexcept {
+    keyType *source = reinterpret_cast<keyType*>(record);
+    countType i = startKeyInd;
+    countType ret = 0;
+    for(; i < keysPerRecord && ret < remaining; i++, ret++) {
+        keyType key = source[i];
+        if(key != HASH_FREE && key != HASH_DELETED) {
+            *dest = key;
+            dest++;
+        }
+    }
+    return ret;
 }
 
 uint32_t constexpr RecordChain::primes[];
@@ -329,6 +379,7 @@ RecordChain::RecordChain(RecordType rt, payloadType pt) : pType(pt) {
     content.push_back(Record(rt, pt));
     if(rt == RT_NODE || rt == RT_ROOT) {
         setHashStart();
+        hashInit();
     }
     reset();
 }
@@ -338,11 +389,24 @@ void RecordChain::setHead(keyType key, const uint8_t * const rec) {
     Record record(key, rec);
     pType = record.getField(FP_PAYLOADTYPE);
     content.push_back(move(record));
-    index = 0;
-    state = RCState::HEAD;
+// TODO check if needed    index = 0;
     RecordType rt = static_cast<RecordType>(*rec);
     if(rt == RT_NODE || rt == RT_ROOT) {
         setHashStart();
+    }
+    if(hashStartRecord[RCS_PAY] == 0) {
+        if(getHeadField(FP_NEXT) == KEY_INVALID) {
+            // no more records
+            state = RCState::FULL;
+        }
+        else {
+            // payload is missing
+            state = RCState::PARTIAL;
+        }
+    }
+    else {
+        // hash is not read
+        state = RCState::HEAD;
     }
     reset();
 }
@@ -369,9 +433,9 @@ void RecordChain::clone(const RecordChain &other) {
     else {
         // too short for the other list, expand and copy leftover
         while(itOther != other.content.end()) {
-            content.push_back(Record(RT_CONT, pType));
-            // clone into the new record
-            (--content.end())->clone(*itOther);
+            Record record(RT_CONT, pType);
+            record.clone(*itOther);
+            content.push_back(move(record));
             itOther++;
         }
     }
@@ -402,6 +466,7 @@ void RecordChain::clear() {
     index = 0;
     if(rt == RT_NODE || rt == RT_ROOT) {
         setHashStart();
+        hashInit();
     }
     state = RCState::EMPTY;
 }
@@ -462,8 +527,11 @@ deque<keyType> RecordChain::getKeys() const {
     return keys;
 }
 
-void RecordChain::addEdge(keyType edgeKey, FieldPosNode which, ups_txn_t *tr) {
-// TODO implement
+void RecordChain::addEdge(FieldPosNode which, keyType key, ups_txn_t *tr) {
+    set<indexType> modifiedIndices = hashInsert(which, key);
+    for(indexType i : modifiedIndices) {
+        content[i].save(db, tr);
+    }
 }
 
 void RecordChain::stripLeftover() {
@@ -473,7 +541,6 @@ void RecordChain::stripLeftover() {
 }
 
 void RecordChain::load(keyType key, ups_txn_t *tr, RCState level) {
-RCState was = state;
     if(level == RCState::EMPTY) {
         throw DebugException("Cannot read no records (requested level = RCState::EMPTY).");
     }
@@ -511,7 +578,7 @@ RCState was = state;
         ups_status_t result = record.load(db, key, tr);
         if(result == UPS_KEY_NOT_FOUND) {
             if(content.size() == 0) {
-                throw ExistenceException("The element cannot be read, might have been deleted meanwhile.");
+                throw ExistenceException("The element cannot be read might have been deleted meanwhile.");
             }
             else {
                 throw CorruptionException("Broken record chain.");
@@ -568,7 +635,6 @@ void RecordChain::save(deque<keyType> &oldKeys, keyType key, ups_txn_t *tr) {
     }
     if(itThis != content.end()) {
         // too long for the old list, insert the leftover
-        // first construct the double linked list
         auto newStart = itThis;
         auto itPrev = itThis;
         if(itPrev != content.begin()) {
@@ -703,12 +769,13 @@ indexType RecordChain::calcPayloadStart(Record &rec) const noexcept {
     RecordType recType = static_cast<RecordType>(rec.getField(FP_RECORDTYPE));
     indexType payloadStart;
     if(recType == RT_NODE || recType == RT_ROOT) {
-        payloadStart = Record::hashStarts[recType] * sizeof(keyType);
+        payloadStart = Record::hashStarts[recType];
         indexType totalLen =
             calcHashLen(rec.getField(FPN_IN_BUCKETS)) +
             calcHashLen(rec.getField(FPN_OUT_BUCKETS)) +
             calcHashLen(rec.getField(FPN_UN_BUCKETS));
-        payloadStart += totalLen * sizeof(keyType);
+        payloadStart += totalLen;
+        payloadStart *= sizeof(keyType);
     }
     else {
         payloadStart = Record::recordVarStarts[recType];
@@ -747,12 +814,12 @@ void RecordChain::setHashStart(const Record * const rec) {
     hashStartKey[RCS_PAY] = nextStart % keysPerRecord;
 }
 
-inline void RecordChain::calcTableIndices(FieldPosNode which, countType index, indexType &indRecord, countType &indKey) const {
+inline void RecordChain::calcTableIndices(FieldPosNode which, countType buckets, countType index, indexType &indRecord, countType &indKey) const {
 #ifdef DEBUG
     if(which != FPN_IN_BUCKETS && which != FPN_OUT_BUCKETS && which != FPN_UN_BUCKETS) {
         throw DebugException("Invalid hash table specifier.");
     }
-    if(index >= getHeadField(which)) {
+    if(index >= buckets) {
         throw DebugException("Hash index out of range.");
     }
 #endif
@@ -767,9 +834,9 @@ inline void RecordChain::calcTableIndices(FieldPosNode which, countType index, i
     else {
         countType cntStart = Record::hashStarts[RT_CONT];
         countType keysPerRecordNet = keysPerRecordBr - cntStart;
-        countType denom = startKey - cntStart + index;
-        indRecord = startRecord + denom / keysPerRecordNet;
-        indKey = cntStart + denom % keysPerRecordNet;
+        countType nom = index + startKey - keysPerRecordBr;
+        indRecord = startRecord + 1 + nom / keysPerRecordNet;
+        indKey = cntStart + nom % keysPerRecordNet;
     }
 #ifdef DEBUG
     if(indKey >= keysPerRecordBr || indRecord >= content.size()) {
@@ -778,38 +845,185 @@ inline void RecordChain::calcTableIndices(FieldPosNode which, countType index, i
 #endif
 }
 
-keyType RecordChain::getHashContent(FieldPosNode which, countType index) const {
+keyType RecordChain::getHashContent(FieldPosNode which, countType buckets, countType index) const {
     indexType indRecord;
     countType indKey;
-    calcTableIndices(which, index, indRecord, indKey);
+    calcTableIndices(which, buckets, index, indRecord, indKey);
     return content[indRecord].readKey(indKey);
 }
 
-indexType RecordChain::setHashContent(FieldPosNode which, countType index, keyType key) {
+indexType RecordChain::setHashContent(FieldPosNode which, countType buckets, countType index, keyType key) {
     indexType indRecord;
     countType indKey;
-    calcTableIndices(which, index, indRecord, indKey);
+    calcTableIndices(which, buckets, index, indRecord, indKey);
     content[indRecord].writeKey(indKey, key);
     return indRecord;
 }
 
-countType RecordChain::hash(FieldPosNode which, keyType key, countType disp) {
-    indexType buckets = getHeadField(which);
+countType RecordChain::hash(FieldPosNode which, countType buckets, keyType key, countType disp) {
+    // TODO check for consecutive keys
     return static_cast<countType>((key % buckets + disp * (1 + key % (buckets - 1))) % buckets);
+}
+
+void RecordChain::hashInit(FieldPosNode which, countType remaining) noexcept {
+    int n = (which - FPN_IN_BUCKETS) / FR_SPAN;
+    indexType startRecInd = hashStartRecord[n];
+    indexType endRecInd = hashStartRecord[n + 1];
+    countType startKeyInd = hashStartKey[n];
+    countType restKeyInd = Record::hashStarts[RT_CONT];
+    for(indexType i = startRecInd; i <= endRecInd; i++) {
+        if(i > startRecInd) {
+            startKeyInd = restKeyInd;
+        }
+        countType ready = content[i].hashInit(startKeyInd, remaining);
+        remaining -= ready;
+    }
+}
+
+void RecordChain::hashInit() noexcept {
+    hashInit(FPN_IN_BUCKETS, getHeadField((FPN_IN_BUCKETS)));
+    hashInit(FPN_OUT_BUCKETS, getHeadField((FPN_OUT_BUCKETS)));
+    hashInit(FPN_UN_BUCKETS, getHeadField((FPN_UN_BUCKETS)));
+}
+
+void RecordChain::hashCollect(FieldPosNode which, keyType * array, countType remaining) const noexcept {
+    int hashStartInd = (which - FPN_IN_BUCKETS) / FR_SPAN;
+    indexType startRecInd = hashStartRecord[hashStartInd];
+    indexType endRecInd = hashStartRecord[hashStartInd + 1];
+    countType startKeyInd = hashStartKey[hashStartInd];
+    countType restKeyInd = Record::hashStarts[RT_CONT];
+    for(indexType i = startRecInd; i <= endRecInd; i++) {
+        if(i > startRecInd) {
+            startKeyInd = restKeyInd;
+        }
+        countType examined = content[i].hashCollect(startKeyInd, array, remaining);
+        remaining -= examined;
+    }
+}
+
+indexType RecordChain::doInsert(FieldPosNode which, countType buckets, keyType key, countType * const deleted) {
+    for(countType i = 0; i != buckets; i++) {
+        countType ind = hash(which, buckets, key, i);
+        keyType hashed = getHashContent(which, buckets, ind);
+        if(hashed == HASH_FREE || hashed == HASH_DELETED) {
+            if(hashed == HASH_DELETED) {
+                if(deleted != nullptr) {
+                    (*deleted)--;
+                }
+                else {
+                    throw DebugException("Hash table was thought to be empty.");
+                }
+            }
+            return setHashContent(which, buckets, ind, key);
+        }
+    }
+    throw DebugException("Unable to insert key into hash.");
+}
+
+set<indexType> RecordChain::hashInsert(FieldPosNode which, keyType key) {
+    set<indexType> modifiedIndices;
+    int hashStartInd = (which - FPN_IN_BUCKETS) / FR_SPAN;
+    countType buckets = getHeadField(which);
+    countType used = getHeadField(which + FR_USED);
+    countType deleted = getHeadField(which + FR_DELETED);
+    if(used + deleted >= double(buckets) * 0.89) {
+        if(buckets == primes[primesLen - 1]) {
+            // not too likely but who knows
+            throw IllegalQuantityException("Too many edges for a node.");
+        }
+        // save the old contents
+        keyType *oldKeys = new keyType[used + 1];
+        hashCollect(which, oldKeys, buckets);
+        // and append the new key
+        oldKeys[used++] = key;
+        // calculate the new bucket count, first try only one more record
+        countType keysPerRecordNet = Record::getKeysPerRecord() - Record::hashStarts[RT_CONT];
+        countType perhaps = calcHashLen(buckets) + keysPerRecordNet;
+        countType missingRecords;
+        int where;
+        for(where = 0; where < primesLen && primes[where] <= perhaps; where++);
+        where--;
+        if(primes[where] == buckets) {
+            // one more record was not enough, calculate how many missing
+            where++;
+            missingRecords = (primes[where] - buckets + keysPerRecordNet - 1) / keysPerRecordNet;
+        }
+        else {
+            // the last one was right
+            missingRecords = 1;
+        }
+        bool wasSingle = buckets == primes[0];
+        buckets = primes[where];
+        // sets hashStart* as well
+        setHeadField(which, buckets);
+        // the index we insert at, pushing its ols content and anything beyond
+        // it forward
+        indexType insertPoint = hashStartRecord[hashStartInd] + 1;
+        payloadType pt = getHeadField(FP_PAYLOADTYPE);
+        // insert all the missing records in one run to have the existing stuff
+        // be moved only once
+        auto insertIt = content.begin() + insertPoint;
+        deque<Record> newStuff;
+        for(countType i = 0; i < missingRecords; i++) {
+            Record record(RT_CONT, pt);
+            record.setKey(keyGen->nextKey());
+            newStuff.push_back(move(record));
+            modifiedIndices.insert(insertPoint + i);
+        }
+        content.insert(insertIt,
+                       make_move_iterator(newStuff.begin()),
+                       make_move_iterator(newStuff.end()));
+        if(wasSingle) {
+            // copy the stuff after this hashtable into it
+            content[insertPoint].copyContent(content[insertPoint - 1]);
+            if(insertPoint == 1) {
+                // we copied the head, restore the record type
+                content[insertPoint].setField(FP_RECORDTYPE, static_cast<uint8_t>(RT_CONT));
+            }
+        }
+        // link the new records
+        // insertPoint is now the index of the last old record remained in place
+        keyType oldEnd = content[--insertPoint].getField(FP_NEXT);
+        for(indexType i = insertPoint + missingRecords; i > insertPoint; i--) {
+            Record &rec = content[i];
+            rec.setField(FP_NEXT, oldEnd);
+            oldEnd = rec.getKey();
+        }
+        content[insertPoint].setField(FP_NEXT, oldEnd);
+        modifiedIndices.insert(insertPoint);
+        // set all to free
+        hashInit(which, buckets);
+        deleted = 0;
+        // copy old keys into new table
+        for(countType i = 0; i < used; i++) {
+            doInsert(which, buckets, oldKeys[i], nullptr);
+        }
+        delete[] oldKeys;
+    }
+    else {
+        // may decrement deleted
+        modifiedIndices.insert(doInsert(which, buckets, key, &deleted));
+        used++;
+    }
+    // we need the head record, too
+    modifiedIndices.insert(0);
+    setHeadField(which + FR_USED, used);
+    setHeadField(which + FR_DELETED, deleted);
+    return modifiedIndices;
 }
 
 #ifdef DEBUG
 void RecordChain::fillHashTable(FieldPosNode which) {
     countType len = getHeadField(which);
     for(countType i = 0; i < len; i++) {
-        setHashContent(which, i, primes[primesLen - 1] - i);
+        setHashContent(which, len, i, primes[primesLen - 1] - i);
     }
 }
 
 void RecordChain::checkHashTable(FieldPosNode which) {
     countType len = getHeadField(which);
     for(countType i = 0; i < len; i++) {
-        if(getHashContent(which, i) != primes[primesLen - 1] - i) {
+        if(getHashContent(which, len, i) != primes[primesLen - 1] - i) {
             throw DebugException("Value mismatch during hash table check.");
         }
     }
@@ -820,7 +1034,6 @@ void RecordChain::appendMissingRecords() {
         content.push_back(Record(RT_CONT, getHeadField(FP_PAYLOADTYPE)));
     }
 }
-
 #endif
 
 Converter& Converter::operator>>(int8_t& b) {

@@ -35,7 +35,7 @@ protected:
 		static size_t size;
 
         /** Record type names. */
-        static constexpr char recordTypeNames[6][6] = {"root ", "acl ", "node ", "dedge", "uedge", "cont "};
+        static constexpr char recordTypeNames[7][9] = {"invalid ", "root ", "acl ", "node ", "dedge", "uedge", "cont "};
 
         /** The data itself. */
         uint8_t *record;
@@ -148,7 +148,7 @@ protected:
 
 size_t Dump::Record::size = 0;
 
-char constexpr Dump::Record::recordTypeNames[6][6];
+char constexpr Dump::Record::recordTypeNames[7][9];
 
 void Dump::Record::print() const {
 	cout << "@:" << key << ' ';
@@ -206,6 +206,7 @@ void Dump::Record::printRoot() const {
     print("un_bkt", FPN_UN_BUCKETS);
     print("un_use", FPN_UN_USED);
     print("un_del", FPN_UN_DELETED);
+// TODO print edge keys
 }
 
 void Dump::Record::printACL() const {
@@ -222,6 +223,7 @@ void Dump::Record::printNode() const {
     print("un_bkt", FPN_UN_BUCKETS);
     print("un_use", FPN_UN_USED);
     print("un_del", FPN_UN_DELETED);
+// TODO print edge keys
 }
 
 void Dump::Record::printEdge() const {

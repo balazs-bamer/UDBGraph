@@ -6,7 +6,7 @@
 * Payload serializing and deserializing
 * Record chain loading and saving together with node's edge lists
 * UpscaleDB record management
-* Node insert and update
+* Node and edge insert and update
 
 The file src/todo.txt contains planned modifications.
 
@@ -141,7 +141,7 @@ Nodes store three sets of connecting edge keys:
 * Outgoing edge
 * Undirected edge
 
-Managing these sets must be efficient for just a few edges as well as for thousands of edges. I implement a growable open-addressing hash table for each set. The hash table algorithm is designed such that
+Managing these sets must be efficient for just a few edges as well as for thousands of edges. I've implemented a growable open-addressing hash table for each set. The hash table algorithm is designed such that
 * It uses space more efficiently than linked-list hash tables.
 * It uses double hashing to distribute the keys as evenly as possible - this implies the hash table size to be a prime. These primes are pre-calculated and placed along the geometric series a[n] = 2^(1/4 + n/2).
 * If no reallocation occours, adding or removing a key involves at most two UpscaleDB records. This is very important since every edge insertion or deletion involves two node modifications.

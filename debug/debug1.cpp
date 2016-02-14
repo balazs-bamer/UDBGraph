@@ -284,8 +284,8 @@ void loadSave(bool isNode, countType edgesIn, countType edgesOut, countType edge
 		rc.setHeadField(FPN_OUT_BUCKETS, edgesOut);
 		rc.setHeadField(FPN_UN_BUCKETS, edgesUn);
 		rc.appendMissingRecords();
-                rc.reset();	// hash table sizes changed
-                rc.fillHashTable(FPN_IN_BUCKETS);
+        rc.reset();	// hash table sizes changed
+        rc.fillHashTable(FPN_IN_BUCKETS);
 		rc.fillHashTable(FPN_OUT_BUCKETS);
 		rc.fillHashTable(FPN_UN_BUCKETS);
 	}
@@ -378,7 +378,7 @@ void testLoadSave() {
 				}
 			}
 		}
-	}
+    }
 }
 
 int main(int argc, char** argv) {

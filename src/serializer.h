@@ -7,6 +7,7 @@ COPYRIGHT COMES HERE
 #ifndef UDB_SERIALIZER_H
 #define UDB_SERIALIZER_H
 
+#include<set>
 #include<deque>
 #include<cstdint>
 #include<algorithm>
@@ -143,6 +144,12 @@ namespace udbgraph {
     /** Identifiers of record chain sections used to index RecordChain.hashStart*. */
     enum RCSection {
         RCS_IN, RCS_OUT, RCS_UN, RCS_PAY, RCS_NOMORE
+    };
+
+    /** Identifiers for free and deleted hash table entries. These values are for
+    invalid and ACL, so won't occur in a hash table. */
+    enum HashLabels {
+        HASH_FREE, HASH_DELETED
     };
 
 #define MAXMACRO(x,y) ((static_cast<int>(x))>(static_cast<int>(y))?(static_cast<int>(x)):(static_cast<int>(y)))
@@ -317,20 +324,26 @@ namespace udbgraph {
             /** Destructor deletes the in-memory byte array. */
 			~Record() { delete[] record; }
 
-            /** No copy constructor. */
-			Record(const Record& p) = delete;
+            /** Commented out - was: Copy constructor copies everything but invalidates the key. */
+            Record(const Record& p) = delete;
 
             /** Move constructor. */
             Record(Record &&p) noexcept ;
 
-            /** No copy assignment. */
-			Record& operator=(const Record& p) = delete;
+            /** Commented out - was: Copy assignment copies everything but invalidates the key. */
+            Record& operator=(const Record& p) = delete;
 
             /** Move assignment. */
             Record& operator=(Record &&p) noexcept;
 
-            /** Clones the other instance here, does not set index.*/
+            /** Clones the other instance here, does not set index, but copies the key, too.
+            Assumes that all other fields are valid here. */
             void clone(const Record &other) noexcept;
+
+            /** Copies the record content only. */
+            void copyContent(const Record &other) noexcept {
+                memcpy(record, other.record, size);
+            }
 
             /** Resets the index to the end of the fixed fields. */
             void reset() { index = recordVarStarts[record[FP_RECORDTYPE]]; }
@@ -435,6 +448,17 @@ namespace udbgraph {
 
             /** Write the record in db using the transaction. */
             void save(ups_db_t *db, ups_txn_t *tr);
+
+            /** Fills HASH_FREE from at most 'remaining' buckets starting at
+             * startKeyInd. This function treates this part of the record
+               as a hashtable of keyType. */
+            countType hashInit(countType startKeyInd, countType remaining) noexcept;
+
+            /** Collects valid keys from at most 'remaining' buckets starting at
+             * startKeyInd into dest. dest is incremented as valid keys are copied
+             * into it. This function treates this part of the record
+               as a hashtable of keyType. */
+            countType hashCollect(countType startKeyInd, keyType *&dest, countType remaining) const noexcept;
         };
 
         /** Primes to use as open addressing hash buckets count. These residue
@@ -550,10 +574,11 @@ namespace udbgraph {
         /** Gathers the old keys from content. */
         std::deque<keyType> getKeys() const;
 
-        /* Adds an edge to the indicated array and writes the changed records
-         * to disk. If there was no more free space in the free array, inserts a
-         * new record. */
-        void addEdge(keyType edgeKey, FieldPosNode which, ups_txn_t *tr);
+        /**
+         * Adds an edge to the indicated array and writes the changed records
+         * to disk. If there was no more free space in the free array, inserts
+         * new record(s). */
+        void addEdge(FieldPosNode which, keyType edgeKey, ups_txn_t *tr);
 
         /** Removes all records after the one pointed by index. */
         void stripLeftover();
@@ -633,7 +658,7 @@ namespace udbgraph {
 
     protected:
         /** Calculates the total number of keys in a bucket array, together with
-         * the fill space above the used buckets with prime count.
+         * the fill space above the used buckets with prime count and the fixed fields.
          * In order to let one array grow without affecting others or the payload,
          * each array is padded to a multiple of full record size + the minimal
          * possible bucket length. */
@@ -648,17 +673,39 @@ namespace udbgraph {
 
         /** Calculates the record and key positions for the given hash table
          * and hash index. */
-        void calcTableIndices(FieldPosNode which, countType index, indexType &indRecord, countType &indKey) const;
+        void calcTableIndices(FieldPosNode which, countType buckets, countType index, indexType &indRecord, countType &indKey) const;
 
         /** Returns the bucket value at index for the given table. */
-        keyType getHashContent(FieldPosNode which, countType index) const;
+        keyType getHashContent(FieldPosNode which, countType buckets, countType index) const;
 
         /** Sets the bucket value at index for the given table.
         @return the index of modified record in content. */
-        indexType setHashContent(FieldPosNode which, countType index, keyType key);
+        indexType setHashContent(FieldPosNode which, countType buckets, countType index, keyType key);
 
         /** Calculates a hash table index for the given table, key and displacement. */
-        countType hash(FieldPosNode which, keyType key, countType disp);
+        countType hash(FieldPosNode which, countType buckets, keyType key, countType disp);
+
+        /** Fills the specified hash table with HASH_FREE values. remaining has to be set to
+         * the actual bucket count. */
+        void hashInit(FieldPosNode which, countType remaining) noexcept;
+
+        /** Initializes all hash tables with all HASH_FREE values. */
+        void hashInit() noexcept;
+
+        /** Collects all valid keys from the specified hash table into the given array.
+         * The caller must guarantee that the array is large enogh. remaining has
+        to be set to the actual bucket count. */
+        void hashCollect(FieldPosNode which, keyType * array, countType remaining) const noexcept;
+
+        /** Does the actual insert without incrementing used counter. The deleted
+         * may be decremented if overwrites a deleted entry.
+         * @return the index of modified record. */
+        indexType doInsert(FieldPosNode which, countType buckets, keyType key, countType * const deleted);
+
+        /** Inserts the key in the specified hash table, possibly rehashing its contents
+         * if the table is full enough: used + deleted >= double(buckets) * 0.89
+        @return the list of modified content indices. */
+        std::set<indexType> hashInsert(FieldPosNode which, keyType key);
 
 #ifdef DEBUG
     public:

@@ -4,6 +4,10 @@ COPYRIGHT COMES HERE
 
 #include"udbgraph.h"
 
+#ifdef DEBUG
+#include<iostream>
+#endif
+
 #if USE_NVWA == 1
 #include"debug_new.h"
 #endif
@@ -363,7 +367,8 @@ shared_ptr<GraphElem> Database::doBareRead(keyType key, RCState level, ups_txn_t
     }
     else {
         payloadType plType = FixedFieldIO::getField(FP_PAYLOADTYPE, reinterpret_cast<uint8_t *>(upsRecord.data));
-        ret = GEFactory::create(shared_from_this(), plType);
+        shared_ptr<Database> db = shared_from_this();
+        ret = GEFactory::create(db, plType);
     }
     ret->setHead(key, reinterpret_cast<uint8_t *>(upsRecord.data));
     ret->read(upsTr, level);
@@ -476,7 +481,7 @@ keyType Database::getFirstFreeKey() {
 
 transHandleType Transaction::counter = 0;
 
-GraphElem::GraphElem(shared_ptr<Database> d, RecordType rt, unique_ptr<Payload> pl) :
+GraphElem::GraphElem(shared_ptr<Database> &d, RecordType rt, unique_ptr<Payload> pl) :
     db(d), recordType(rt), payload(std::move(pl)), chainOrig(rt, payload->getType()), chainNew(rt, payload->getType()),
     converter(Converter(chainNew)) {
     d->exportDB(chainOrig);
@@ -496,6 +501,50 @@ Payload& GraphElem::pl() {
         break;
     }
     return *payload;
+}
+
+void GraphElem::setEnds(shared_ptr<GraphElem> &start, shared_ptr<GraphElem> &end) {
+    keyType keyStart = start->getKey();
+    keyType keyEnd = end->getKey();
+    checkEnds(end->getType(), start->getType(), keyStart, keyEnd);
+    chainNew.setHeadField(FPE_NODE_START, keyStart);
+    chainNew.setHeadField(FPE_NODE_END, keyEnd);
+}
+
+void GraphElem::setStartRootEnd(shared_ptr<GraphElem> &start) {
+    keyType keyStart = start->getKey();
+    keyType keyEnd = KEY_ROOT;
+    checkEnds(RT_ROOT, start->getType(), keyStart, keyEnd);
+    chainNew.setHeadField(FPE_NODE_START, keyStart);
+    chainNew.setHeadField(FPE_NODE_END, keyEnd);
+}
+
+void GraphElem::setEndRootStart(shared_ptr<GraphElem> &end) {
+    keyType keyStart = KEY_ROOT;
+    keyType keyEnd = end->getKey();
+    checkEnds(end->getType(), RT_ROOT, keyStart, keyEnd);
+    chainNew.setHeadField(FPE_NODE_START, keyStart);
+    chainNew.setHeadField(FPE_NODE_END, keyEnd);
+}
+
+void GraphElem::checkEnds(RecordType rt1, RecordType rt2, keyType key1, keyType key2) const {
+    // TODO test
+    if(dynamic_cast<const Edge*>(this) == nullptr) {
+        throw IllegalMethodException("setEnds, setStartRootEnd or setEndRootStart may only be called on Edge.");
+    }
+    if(chainNew.getHeadField(FPE_NODE_START) != static_cast<keyType>(KEY_INVALID) ||
+        chainNew.getHeadField(FPE_NODE_END) != static_cast<keyType>(KEY_INVALID)) {
+        throw ExistenceException("Ends are already set.");
+    }
+    if((rt1 != RT_NODE && rt1 != RT_ROOT) || (rt2 != RT_NODE && rt2 != RT_ROOT)) {
+        throw IllegalArgumentException("End must be node.");
+    }
+    if(key1 == KEY_INVALID || key2 == KEY_INVALID) {
+        throw IllegalArgumentException("End must have valid key.");
+    }
+    if(key1 == key2) {
+        throw IllegalArgumentException("Two ends must be different (no loop edges allowed).");
+    }
 }
 
 void GraphElem::setHead(keyType k, const uint8_t * const record) {
@@ -567,12 +616,12 @@ void GraphElem::endTrans(TransactionEnd te) {
     }
 }
 
-void AbstractNode::addEdge(keyType edgeKey, FieldPosNode where, ups_txn_t *tr) {
+void AbstractNode::addEdge(FieldPosNode where, keyType edgeKey, ups_txn_t *tr) {
     if(chainNew.getState() < RCState::PARTIAL) {
         // make sure we have the edge arrays
         chainNew.load(key, tr, RCState::PARTIAL);
     }
-    chainNew.addEdge(edgeKey, where, tr);
+    chainNew.addEdge(where, edgeKey, tr);
 }
 
 Root::Root(shared_ptr<Database> d, uint32_t vmaj, uint32_t vmin, string name) :
@@ -610,24 +659,6 @@ void Root::writeFixed() {
     chainNew.setHeadField(FPR_APP_NAME + i, static_cast<uint8_t>(0));
 }
 
-void Edge::setEnds(shared_ptr<GraphElem> &start, shared_ptr<GraphElem> &end) {
-    if(chainNew.getHeadField(FPE_NODE_START) != static_cast<keyType>(KEY_INVALID) ||
-        chainNew.getHeadField(FPE_NODE_END) != static_cast<keyType>(KEY_INVALID)) {
-        throw ExistenceException("Ends are already set.");
-    }
-    if(start->getType() != RT_NODE || end->getType() != RT_NODE) {
-        throw IllegalArgumentException("Ends must be nodes.");
-    }
-    keyType keyStart = start->getKey();
-    keyType keyEnd = end->getKey();
-    if(keyStart ==  static_cast<keyType>(KEY_INVALID) ||
-            keyEnd == static_cast<keyType>(KEY_INVALID)) {
-        throw IllegalArgumentException("Ends must have valid keys.");
-    }
-    chainNew.setHeadField(FPE_NODE_START, keyStart);
-    chainNew.setHeadField(FPE_NODE_END, keyEnd);
-}
-
 deque<keyType> Edge::getConnectedElemsBeforeWrite() {
     deque<keyType> result;
     if(state == GEState::DU) {
@@ -643,9 +674,9 @@ void DirEdge::write(deque<shared_ptr<GraphElem>> &connected, ups_txn_t *tr) {
     GraphElem::write(connected, tr);
     if(needUpdateEnds) {
         // first key is for edge start, the edge comes out of this node
-        dynamic_pointer_cast<AbstractNode>(connected[0])->addEdge(key, FPN_OUT_BUCKETS, tr);
+        dynamic_pointer_cast<AbstractNode>(connected[0])->addEdge(FPN_OUT_BUCKETS, key, tr);
         // second key is for edge end, the edge goes into this node
-        dynamic_pointer_cast<AbstractNode>(connected[1])->addEdge(key, FPN_IN_BUCKETS, tr);
+        dynamic_pointer_cast<AbstractNode>(connected[1])->addEdge(FPN_IN_BUCKETS, key, tr);
     }
 }
 
@@ -653,8 +684,8 @@ void UndirEdge::write(deque<shared_ptr<GraphElem>> &connected, ups_txn_t *tr) {
     bool needUpdateEnds = state == GEState::DU;
     GraphElem::write(connected, tr);
     if(needUpdateEnds) {
-        dynamic_pointer_cast<AbstractNode>(connected[0])->addEdge(key, FPN_UN_BUCKETS, tr);
-        dynamic_pointer_cast<AbstractNode>(connected[1])->addEdge(key, FPN_UN_BUCKETS, tr);
+        dynamic_pointer_cast<AbstractNode>(connected[0])->addEdge(FPN_UN_BUCKETS, key, tr);
+        dynamic_pointer_cast<AbstractNode>(connected[1])->addEdge(FPN_UN_BUCKETS, key, tr);
     }
 }
 
@@ -676,7 +707,7 @@ payloadType GEFactory::reg(CreatorFunction classCreator) {
     return typeKey;
 }
 
-shared_ptr<GraphElem> GEFactory::create(shared_ptr<Database> db, payloadType typeKey) {
+shared_ptr<GraphElem> GEFactory::create(std::shared_ptr<Database> &db, payloadType typeKey) {
     auto it = registry.find(typeKey);
     if (it != registry.end()) {
         if (it->second) {

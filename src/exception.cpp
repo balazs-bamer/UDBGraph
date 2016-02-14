@@ -34,7 +34,7 @@ void BaseException::appendBacktrace() noexcept {
     }
     // Iterate over the returned symbol lines. Skip the first two, these are
     // this function and the constructors.
-    for (int i = 4; i < addrlen; i++) {
+    for (int i = 3; i < addrlen; i++) {
         append("- ");
         char *begin_name = nullptr, *begin_offset = nullptr, *end_offset = nullptr;
         // find parentheses and +address offset surrounding the mangled name:

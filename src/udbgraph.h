@@ -82,6 +82,8 @@ namespace udbgraph {
     class GraphElem;
     class Transaction;
     class Node;
+    class DirEdge;
+    class UndirEdge;
     class GEFactory;
 
     typedef std::unordered_map<transHandleType, ups_txn_t*> upsTransMapType;
@@ -192,9 +194,24 @@ namespace udbgraph {
         is thrown. */
         void create(const char *filename, uint32_t mode = 0644, size_t recordSize = UDB_DEF_RECORD_SIZE);
 
+        /** Creates and opens a database with the specified filename, access
+         * bits and UpscaleDB record size. Also creates the global root node.
+        If the record size is so small, that the fixed fields for a record type would
+        completely fill, or is bigger than UDB_MAX_RECORD_SIZE (1M), DebugException
+        is thrown. */
+        void create(const std::string filename, uint32_t mode = 0644, size_t recordSize = UDB_DEF_RECORD_SIZE) {
+            create(filename.c_str(), mode, recordSize);
+        }
+
         /** Opens an existing database, checks the version and application using the
          * root node and searches the maximal key to initialize autoIndex. */
         void open(const char *filename);
+
+        /** Opens an existing database, checks the version and application using the
+         * root node and searches the maximal key to initialize autoIndex. */
+        void open(const std::string filename) {
+            open(filename.c_str());
+        }
 
         /** Closes the database, may throw exception on error. Use this instead of
         relying on destructor if cleanup error management is important. */
@@ -237,10 +254,10 @@ namespace udbgraph {
         /** Technical use only. */
         void exportAutoIndex(RecordChain &rc) { rc.setKeyGen(keyGen); }
 
-        /* Returns the first real root. */
+        /* Returns the first user root. */
         Node getRoot();
 
-        /* Returns a list of real roots.
+        /* Returns a list of user roots.
         TODO should return iterator*/
         //deque<Node> getRoots();
     protected:
@@ -432,7 +449,7 @@ namespace udbgraph {
         /** Should not be instantiated. This constructor creates the two Serializer
         instances and passes the Database's inner UpscaleDB database pointer
         to them. */
-        GraphElem(std::shared_ptr<Database> d, RecordType rt, std::unique_ptr<Payload> pl);
+        GraphElem(std::shared_ptr<Database> &d, RecordType rt, std::unique_ptr<Payload> pl);
 
     public:
         /** Does not allow instantiation. */
@@ -473,7 +490,35 @@ namespace udbgraph {
         /** Convenience wrapper for elems registered in Database. */
         void write(Transaction &tr) { db.lock()->write(key, tr); }
 
+        /** Registers the two endpoints for the brand new edge if they are not
+         * set yet. Arguments must represent nodes. For undirected edges, start
+         * and end order does not matter. If the arguments are edges, their key
+        is invalid or the ends are already set, or they are the same,
+        the method throws exception.
+        This method would belong to edge but it is here to save the application
+        from nasty casts. This method throws exception if not called on Edge. */
+        void setEnds(std::shared_ptr<GraphElem> &start, std::shared_ptr<GraphElem> &end);
+
+        /** Registers the start endpoint and root as end for the brand new edge.
+         * Argument must represent node. For undirected edges, start
+         * and end order does not matter. If the argument is edge, its key
+        is invalid or the ends are already set, the method throws exception.
+        This method would belong to edge but it is here to save the application
+        from nasty casts. This method throws exception if not called on Edge. */
+        void setStartRootEnd(std::shared_ptr<GraphElem> &start);
+
+        /** Registers the end endpoint and root as start for the brand new edge.
+         * Argument must represent node. For undirected edges, start
+         * and end order does not matter. If the argument is edge, its key
+        is invalid or the ends are already set, the method throws exception.
+        This method would belong to edge but it is here to save the application
+        from nasty casts. This method throws exception if not called on Edge. */
+        void setEndRootStart(std::shared_ptr<GraphElem> &end);
+
 protected:
+        /** Does the necessary checks before setting ends in recordchain. */
+        void checkEnds(RecordType rt1, RecordType rt2, keyType key1, keyType key2) const;
+
         /** Sets key, the head record and deletes the rest. */
         virtual void setHead(keyType key, const uint8_t * const record);
 
@@ -512,9 +557,9 @@ protected:
     class AbstractNode : public GraphElem {
     protected:
         /** Cannot be instantiated. . */
-        AbstractNode(std::shared_ptr<Database> d, RecordType rt, std::unique_ptr<Payload> pl) : GraphElem(d, rt, std::move(pl)) {}
+        AbstractNode(std::shared_ptr<Database> &d, RecordType rt, std::unique_ptr<Payload> pl) : GraphElem(d, rt, std::move(pl)) {}
 
-        void addEdge(keyType key, FieldPosNode where, ups_txn_t *tr);
+        void addEdge(FieldPosNode where, keyType key, ups_txn_t *tr);
 
         friend class DirEdge;
         friend class UndirEdge;
@@ -524,7 +569,7 @@ protected:
     class Node final : public AbstractNode {
     public:
         /** Constructs a new instance via create. */
-        Node(std::shared_ptr<Database> d, std::unique_ptr<Payload> pl) : AbstractNode(d, RT_NODE, std::move(pl)) {}
+        Node(std::shared_ptr<Database> &d, std::unique_ptr<Payload> pl) : AbstractNode(d, RT_NODE, std::move(pl)) {}
 
     protected:
         /** Writes the fixed fields into chainNew. Here does nothing. */
@@ -571,16 +616,8 @@ protected:
     class Edge : public GraphElem {
     protected:
         /** Cannot be instantiated. . */
-        Edge(std::shared_ptr<Database> d, RecordType rt, std::unique_ptr<Payload> pl) : GraphElem(d, rt, std::move(pl)) {}
+        Edge(std::shared_ptr<Database> &d, RecordType rt, std::unique_ptr<Payload> pl) : GraphElem(d, rt, std::move(pl)) {}
 
-    public:
-        /** Registers the two endpoints for the brand new edge if they are not
-         * set yet. Arguments must represent nodes. For undirected edges, start
-         * and end order does not matter. If the arguments are edges, their key
-        is invalid or the ends are already set, the method throws exception. */
-        void setEnds(std::shared_ptr<GraphElem> &start, std::shared_ptr<GraphElem> &end);
-
-    protected:
         /** Here it returns the two endpoints if state is DU, otherwise nothing.
         The queue always has the start point at the first place. */
         virtual std::deque<keyType> getConnectedElemsBeforeWrite();
@@ -592,7 +629,7 @@ protected:
     class DirEdge final : public Edge {
     public:
         /** Constructs a new instance via create. */
-        DirEdge(std::shared_ptr<Database> d, RecordType rt, std::unique_ptr<Payload> pl) : Edge(d, rt, std::move(pl)) {}
+        DirEdge(std::shared_ptr<Database> &d, RecordType rt, std::unique_ptr<Payload> pl) : Edge(d, rt, std::move(pl)) {}
 
     protected:
         /** Writes the fixed fields into chainNew. Here does nothing. */
@@ -608,7 +645,7 @@ protected:
     class UndirEdge final : public Edge {
     public:
         /** Constructs a new instance via create. */
-        UndirEdge(std::shared_ptr<Database> d, RecordType rt, std::unique_ptr<Payload> pl) : Edge(d, rt, std::move(pl)) {}
+        UndirEdge(std::shared_ptr<Database> &d, RecordType rt, std::unique_ptr<Payload> pl) : Edge(d, rt, std::move(pl)) {}
 
     protected:
         /** Writes the fixed fields into chainNew. Here does nothing. */
@@ -654,7 +691,7 @@ protected:
 
         // Used in GEFactory to create a shared_ptr holding a new class instance.
         // Here it is a Node, but may be DirEdge and UndirEdge as well.
-        static shared_ptr<GraphElem> create(shared_ptr<Database> db, payloadType pt) {
+        static shared_ptr<GraphElem> create(shared_ptr<Database> &db, payloadType pt) {
             return shared_ptr<GraphElem>(new Node(db, std::unique_ptr<Payload>(new SamplePayload(pt))));
         }
 
@@ -689,7 +726,7 @@ protected:
     */
     class GEFactory final {
         /** Creator method type in GraphElem subclasses. */
-        typedef std::shared_ptr<GraphElem> (*CreatorFunction) (std::shared_ptr<Database>, payloadType pt);
+        typedef std::shared_ptr<GraphElem> (*CreatorFunction) (std::shared_ptr<Database>&, payloadType pt);
 
     protected:
         /** Map holding type IDs and function pointers. */
@@ -711,7 +748,7 @@ protected:
         /** Creates a class instance based on the given type. If it is unknown,
          * throws DebugException.
         @param db the Database instance to use with. */
-        static std::shared_ptr<GraphElem> create(std::shared_ptr<Database> db, payloadType typeKey);
+        static std::shared_ptr<GraphElem> create(std::shared_ptr<Database> &db, payloadType typeKey);
     };
 
     /** Empty payload for creating empty nodes, serves as an example. */
@@ -724,7 +761,7 @@ protected:
         static payloadType id() { return static_cast<payloadType>(PT_EMPTY_NODE); }
 
         /** Used in GEFactory to create a shared_ptr holding a new class instance. */
-        static std::shared_ptr<GraphElem> create(std::shared_ptr<Database> db, payloadType pt) {
+        static std::shared_ptr<GraphElem> create(std::shared_ptr<Database> &db, payloadType pt) {
             return std::shared_ptr<GraphElem>(new Node(db, std::unique_ptr<Payload>(new EmptyNode(pt))));
         }
     };
@@ -739,7 +776,7 @@ protected:
         static payloadType id() { return static_cast<payloadType>(PT_EMPTY_DEDGE); }
 
         /** Used in GEFactory to create a shared_ptr holding a new class instance. */
-        static std::shared_ptr<GraphElem> create(std::shared_ptr<Database> db, payloadType pt) {
+        static std::shared_ptr<GraphElem> create(std::shared_ptr<Database> &db, payloadType pt) {
             return std::shared_ptr<GraphElem>(new DirEdge(db, RT_DEDGE, std::unique_ptr<Payload>(new EmptyDirEdge(pt))));
         }
     };
@@ -754,7 +791,7 @@ protected:
         static payloadType id() { return static_cast<payloadType>(PT_EMPTY_UEDGE); }
 
         /** Used in GEFactory to create a shared_ptr holding a new class instance. */
-        static std::shared_ptr<GraphElem> create(std::shared_ptr<Database> db, payloadType pt) {
+        static std::shared_ptr<GraphElem> create(std::shared_ptr<Database> &db, payloadType pt) {
             return std::shared_ptr<GraphElem>(new UndirEdge(db, RT_UEDGE, std::unique_ptr<Payload>(new EmptyUndirEdge(pt))));
         }
     };
