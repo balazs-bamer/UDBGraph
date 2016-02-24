@@ -475,9 +475,7 @@ void RecordChain::reset() {
     RecordType rt = static_cast<RecordType>(getHeadField(FP_RECORDTYPE));
     if(rt == RT_NODE || rt == RT_ROOT) {
         index = hashStartRecord[RCS_PAY];
-        if(state >= RCState::PARTIAL) {
-            content[index].setIndex(hashStartKey[RCS_PAY] * sizeof(keyType));
-        }
+        content[index].setIndex(hashStartKey[RCS_PAY] * sizeof(keyType));
     }
 }
 
