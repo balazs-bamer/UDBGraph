@@ -7,7 +7,7 @@ COPYRIGHT COMES HERE
 #ifndef UDB_SERIALIZER_H
 #define UDB_SERIALIZER_H
 
-#include<set>
+#include<unordered_set>
 #include<deque>
 #include<cstdint>
 #include<algorithm>
@@ -21,6 +21,48 @@ COPYRIGHT COMES HERE
 #include"util.h"
 
 namespace udbgraph {
+
+#ifdef DEBUG
+/** Increments the appropriate counter in UpsCounter. */
+ups_status_t _ups_db_insert(ups_db_t *db, ups_txn_t *txn, ups_key_t *key, ups_record_t *record, uint32_t flags);
+
+/** Increments the appropriate counter in UpsCounter. */
+ups_status_t _ups_db_erase(ups_db_t *db, ups_txn_t *txn, ups_key_t *key, uint32_t flags);
+
+/** Increments the appropriate counter in UpsCounter. */
+ups_status_t _ups_db_find(ups_db_t *db, ups_txn_t *txn, ups_key_t *key, ups_record_t *record, uint32_t flags);
+
+    /** Class for counting UpscaleDB database accesses. */
+    class UpsCounter final {
+    protected:
+        /** Number of inserts. */
+        static uint64_t countInsert;
+
+        /** Number of deletes. */
+        static uint64_t countErase;
+
+        /** Number of reads. */
+        static uint64_t countFind;
+
+    public:
+        /** Return insert count. */
+        static uint64_t getInsert() { return countInsert; }
+
+        /** Return delete count. */
+        static uint64_t getErase() { return countErase; }
+
+        /** Return read count. */
+        static uint64_t getFind() { return countFind; }
+
+        friend ups_status_t (udbgraph::_ups_db_insert(ups_db_t *db, ups_txn_t *txn, ups_key_t *key, ups_record_t *record, uint32_t flags));
+        friend ups_status_t (udbgraph::_ups_db_erase(ups_db_t *db, ups_txn_t *txn, ups_key_t *key, uint32_t flags));
+        friend ups_status_t (udbgraph::_ups_db_find(ups_db_t *db, ups_txn_t *txn, ups_key_t *key, ups_record_t *record, uint32_t flags));
+    };
+#else
+#define _ups_db_insert ups_db_insert
+#define _ups_db_erase ups_db_erase
+#define _ups_db_find ups_db_find
+#endif
 
 /** Application name length stored in root including terminating 0. */
 #define APP_NAME_LENGTH 32
@@ -695,7 +737,7 @@ namespace udbgraph {
         /** Collects all valid keys from the specified hash table into the given array.
          * The caller must guarantee that the array is large enogh. remaining has
         to be set to the actual bucket count. */
-        void hashCollect(FieldPosNode which, keyType * array, countType remaining) const noexcept;
+        countType hashCollect(FieldPosNode which, keyType * array, countType remaining) const noexcept;
 
         /** Does the actual insert without incrementing used counter. The deleted
          * may be decremented if overwrites a deleted entry.
@@ -705,7 +747,7 @@ namespace udbgraph {
         /** Inserts the key in the specified hash table, possibly rehashing its contents
          * if the table is full enough: used + deleted >= double(buckets) * 0.89
         @return the list of modified content indices. */
-        std::set<indexType> hashInsert(FieldPosNode which, keyType key);
+        std::unordered_set<indexType> hashInsert(FieldPosNode which, keyType key);
 
 #ifdef DEBUG
     public:

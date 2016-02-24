@@ -121,7 +121,8 @@ public:
 		}
 		if(maxLen < len) {
 			delete[] content;
-			content = new char[maxLen = len];
+			maxLen = len;
+			content = new char[maxLen + 1];
 		}
 		int div10[] = {1000, 100, 10, 1};
         char remain[] = "xxxx abcd\n";
@@ -217,20 +218,12 @@ void hashTableInsertsUn(shared_ptr<Database> &db, Transaction &tr, shared_ptr<Gr
 
 typedef void HashTableFuncComb(shared_ptr<Database> &db, Transaction &tr, shared_ptr<GraphElem> &node, int n);
 
-void hashTableInserts(string namePref, HashTableFuncComb *func, int n) {
-	try {
-		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
-		db->create(namePref + '-' + to_string(n) + ".udbg", 0644);
-		shared_ptr<GraphElem> node = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
-		Transaction tr = db->beginTrans();
-		db->write(node, tr);
-		func(db, tr, node, n);
-		tr.commit();
-		db->close();
-	}
-	catch(exception &e) {
-		cout << "hashTableInsert01: " << e.what() << endl;
-	}
+void hashTableInserts(shared_ptr<Database> &db, HashTableFuncComb *func, int n) {
+	Transaction tr = db->beginTrans();
+	shared_ptr<GraphElem> node = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
+	db->write(node, tr);
+	func(db, tr, node, n);
+	tr.commit();
 }
 
 void hashTableInsertsI(shared_ptr<Database> &db, Transaction &tr, shared_ptr<GraphElem> &node, int n) {
@@ -282,18 +275,26 @@ void hashTableInsertsIOU(shared_ptr<Database> &db, Transaction &tr, shared_ptr<G
 }
 
 void hashTableInserts() {
-	for(int e = 0; e < 10; e++) {
-		int n = 1 << e;
-		hashTableInserts("debug2-i", hashTableInsertsI, n);
-		hashTableInserts("debug2-o", hashTableInsertsO, n);
-		hashTableInserts("debug2-u", hashTableInsertsU, n);
-		hashTableInserts("debug2-io", hashTableInsertsIO, n);
-		hashTableInserts("debug2-oi", hashTableInsertsOI, n);
-		hashTableInserts("debug2-iu", hashTableInsertsIU, n);
-		hashTableInserts("debug2-ui", hashTableInsertsUI, n);
-		hashTableInserts("debug2-uo", hashTableInsertsUO, n);
-		hashTableInserts("debug2-ou", hashTableInsertsOU, n);
-		hashTableInserts("debug2-iou", hashTableInsertsIOU, n);
+	try {
+		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
+		db->create("debug2-hash-insert.udbg", 0644);
+		for(int e = 0; e < 12; e++) {
+			int n = 1 << e;
+			hashTableInserts(db, hashTableInsertsI, n);
+			hashTableInserts(db, hashTableInsertsO, n);
+			hashTableInserts(db, hashTableInsertsU, n);
+			hashTableInserts(db, hashTableInsertsIO, n);
+			hashTableInserts(db, hashTableInsertsOI, n);
+			hashTableInserts(db, hashTableInsertsIU, n);
+			hashTableInserts(db, hashTableInsertsUI, n);
+			hashTableInserts(db, hashTableInsertsUO, n);
+			hashTableInserts(db, hashTableInsertsOU, n);
+			hashTableInserts(db, hashTableInsertsIOU, n);
+		}
+		db->close();
+	}
+	catch(exception &e) {
+		cout << "hashTableInserts: " << e.what() << endl;
 	}
 }
 
@@ -311,6 +312,7 @@ int main(int argc, char** argv) {
 	nameMismatch();
 	moreWritesPerTrans();
 	hashTableInserts();
+	// cout << "After hash insert - insert: " << UpsCounter::getInsert() << "  erase: " << UpsCounter::getErase() << "  find: " << UpsCounter::getFind() << endl;
 // TODO test edge update, edge creation checks
     return 0;
 }

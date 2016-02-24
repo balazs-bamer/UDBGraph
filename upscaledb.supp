@@ -1,0 +1,33 @@
+{
+   UpscaleDB1
+   Memcheck:Param
+   write(buf)
+   obj:/lib/x86_64-linux-gnu/libc-2.19.so
+   fun:_ZN9upscaledbL8os_writeEiPKvm
+   fun:_ZN9upscaledb7Journal16append_changesetERSt6vectorIPNS_4Page13PersistedDataESaIS4_EEmm
+   fun:_ZN9upscaledb9Changeset5flushEm
+   fun:_ZN9upscaledb23LocalTransactionManager20flush_committed_txnsEPNS_7ContextE
+   fun:_ZN9upscaledb11Environment5closeEj
+   fun:ups_env_close
+   fun:_ZN8udbgraph8Database7doCloseEv
+   fun:_ZN8udbgraph8Database5closeEv
+   fun:_Z18singleInsertCreatev
+   fun:main
+}
+{
+   UpscaleDB2
+   Memcheck:Param
+   pwrite64(buf)
+   obj:/lib/x86_64-linux-gnu/libc-2.19.so
+   fun:_ZN9upscaledb4File6pwriteEmPKvm
+   fun:_ZN9upscaledb10DiskDevice5writeEmPvm
+   fun:_ZN9upscaledb4Page5flushEPNS_6DeviceEPNS0_13PersistedDataE
+   fun:_ZN9upscaledbL21async_flush_changesetESt6vectorIPNS_4Page13PersistedDataESaIS3_EEPNS_6DeviceEPNS_7JournalEmbi
+   fun:_ZN5boost4asio6detail18completion_handlerINS_3_bi6bind_tIvPFvSt6vectorIPN9upscaledb4Page13PersistedDataESaIS9_EEPNS6_6DeviceEPNS6_7JournalEmbiENS3_5list6INS3_5valueISB_EENSJ_ISD_EENSJ_ISF_EENSJ_ImEENSJ_IbEENSJ_IiEEEEEEE11do_completeEPNS1_15task_io_serviceEPNS1_25task_io_service_operationERKNS_6system10error_codeEm
+   fun:_ZN5boost4asio6detail14strand_service11do_completeEPNS1_15task_io_serviceEPNS1_25task_io_service_operationERKNS_6system10error_codeEm
+   fun:_ZN5boost4asio6detail15task_io_service3runERNS_6system10error_codeE
+   fun:_ZN5boost6detail11thread_dataIN9upscaledb12WorkerThreadEE3runEv
+   obj:/usr/lib/x86_64-linux-gnu/libboost_thread.so.1.55.0
+   fun:start_thread
+   fun:clone
+}

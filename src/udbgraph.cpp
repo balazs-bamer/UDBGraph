@@ -17,7 +17,6 @@ using namespace std;
 
 namespace udbgraph {
 
-
     string toString(GEState s) {
         switch(s) {
         case GEState::DU:
@@ -354,7 +353,7 @@ shared_ptr<GraphElem> Database::doBareRead(keyType key, RCState level, ups_txn_t
     upsRecord.flags = upsRecord.partial_offset = upsRecord.partial_size = 0;
     upsRecord.size = 0;
     upsRecord.data = nullptr;
-    ups_status_t result = ups_db_find(db, upsTr, &upsKey, &upsRecord, 0);
+    ups_status_t result = _ups_db_find(db, upsTr, &upsKey, &upsRecord, 0);
     if(result == UPS_KEY_NOT_FOUND) {
         throw ExistenceException("Requested graph element not found in the database.");
     }
@@ -463,7 +462,7 @@ keyType Database::getFirstFreeKey() {
         needle |= (1 << i);
         found.size = found.flags = found.partial_offset = found.partial_size = 0;
         found.data = nullptr;
-        ups_status_t st = ups_db_find(db, nullptr, &key, &found, UPS_FIND_GEQ_MATCH);
+        ups_status_t st = _ups_db_find(db, nullptr, &key, &found, UPS_FIND_GEQ_MATCH);
         switch(st) {
         case UPS_SUCCESS:
             // nothing to do, needle already has the bit set.

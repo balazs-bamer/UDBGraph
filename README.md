@@ -212,9 +212,11 @@ The UDBGraph library is designed with RAII in mind to eliminate pointer ownershi
 
 ### Debugging
 
-When glibc anc glibcxx are used, the class BaseException provides stack trace information. The library can be compiled to use [NVWA](http://sourceforge.net/projects/nvwa/) project, which contains a brilliant memory leak detector working by overloading C++ *new* and *delete* operators. It can be enabled by the *USE_NVWA* option in CMake. By default it finds 4 leaked objects, but these are not originated in this library, since no line number information follows.
+The library can be compiled to use [NVWA](http://sourceforge.net/projects/nvwa/) project, which contains a brilliant memory leak detector working by overloading C++ *new* and *delete* operators. It can be enabled by the *USE_NVWA* option in CMake. By default it finds 4 leaked objects, but these are not originated in this library, since no line number information follows.
 
-Most user operations may throw exceptions for various reasons:
+An other, more comprehensive way to investigate memory-related program faults is to run the program encapsulated in a memory access observer tool such as [Valgrind](http://valgrind.org). This tool means a huge overhead but is able to spot a wide range of faults. The *memcheck.sh* script runs the program and its arguments with predefined suppressions in *upscaledb.supp*.
+
+When glibc anc glibcxx are used, the class BaseException provides stack trace information. Most user operations may throw exceptions for various reasons:
 * Incorrect database handling, like open an already open one.
 * An other transaction locks the graph element.
 * Use of stale Transaction object.
