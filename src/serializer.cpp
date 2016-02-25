@@ -775,10 +775,31 @@ void RecordChain::read(string &s, uint64_t len) {
     delete[] cp;
 }
 
-indexType RecordChain::calcHashLen(countType buckets) const noexcept {
+void RecordChain::calcHashStart(countType keysPerRecord, RecordType rt,
+                  countType bucketsIn, countType bucketsOut, countType bucketsUn,
+                  indexType * const hashStartRecord, countType * const hashStartKey) noexcept {
+    hashStartRecord[RCS_IN] = 0;
+    hashStartKey[RCS_IN] = Record::hashStarts[rt];
+    indexType nextStart = hashStartKey[RCS_IN] + calcHashLen(bucketsIn, keysPerRecord);
     // We use the whole record length, not only the space available for hash,
     // because this way we get absolute positions in the record in caller functions.
-    indexType keysPerRecordBr = Record::getKeysPerRecord();
+    hashStartRecord[RCS_OUT] = nextStart / keysPerRecord;
+    hashStartKey[RCS_OUT] = nextStart % keysPerRecord;
+    nextStart += calcHashLen(bucketsOut, keysPerRecord);
+    hashStartRecord[RCS_UN] = nextStart / keysPerRecord;
+    hashStartKey[RCS_UN] = nextStart % keysPerRecord;
+    nextStart += calcHashLen(bucketsUn, keysPerRecord);
+    hashStartRecord[RCS_PAY] = nextStart / keysPerRecord;
+    hashStartKey[RCS_PAY] = nextStart % keysPerRecord;
+}
+
+
+indexType RecordChain::calcHashLen(countType buckets, countType keysPerRecordBr) noexcept {
+    // We use the whole record length, not only the space available for hash,
+    // because this way we get absolute positions in the record in caller functions.
+    if(keysPerRecordBr == 0) {
+        keysPerRecordBr = Record::getKeysPerRecord();
+    }
     indexType keysPerRecordNet = keysPerRecordBr - Record::hashStarts[RT_CONT];
     indexType firstPrime = primes[0];
     return (buckets - firstPrime + keysPerRecordNet - 1) / keysPerRecordNet *
@@ -818,20 +839,7 @@ void RecordChain::setHashStart(const Record * const rec) {
         bucketsOut = static_cast<countType>(rec->getField(FPN_OUT_BUCKETS));
         bucketsUn = static_cast<countType>(rec->getField(FPN_UN_BUCKETS));
     }
-    hashStartRecord[RCS_IN] = 0;
-    hashStartKey[RCS_IN] = Record::hashStarts[rt];
-    indexType nextStart = hashStartKey[RCS_IN] + calcHashLen(bucketsIn);
-    // We use the whole record length, not only the space available for hash,
-    // because this way we get absolute positions in the record in caller functions.
-    countType keysPerRecord = Record::getKeysPerRecord();
-    hashStartRecord[RCS_OUT] = nextStart / keysPerRecord;
-    hashStartKey[RCS_OUT] = nextStart % keysPerRecord;
-    nextStart += calcHashLen(bucketsOut);
-    hashStartRecord[RCS_UN] = nextStart / keysPerRecord;
-    hashStartKey[RCS_UN] = nextStart % keysPerRecord;
-    nextStart += calcHashLen(bucketsUn);
-    hashStartRecord[RCS_PAY] = nextStart / keysPerRecord;
-    hashStartKey[RCS_PAY] = nextStart % keysPerRecord;
+    calcHashStart(Record::getKeysPerRecord(), rt, bucketsIn, bucketsOut, bucketsUn, hashStartRecord, hashStartKey);
 }
 
 inline void RecordChain::calcTableIndices(FieldPosNode which, countType buckets, countType index, indexType &indRecord, countType &indKey) const {
@@ -1000,10 +1008,12 @@ unordered_set<indexType> RecordChain::hashInsert(FieldPosNode which, keyType key
         // be moved only once
         auto insertIt = content.begin() + firstRecord + 1;
         deque<Record> newStuff;
+        keyType headKey = content[0].getKey();
         // the new records are initialized to free hash values
         for(countType i = 0; i < missingRecords; i++) {
             Record record(RT_CONT, pt);
             record.setKey(keyGen->nextKey());
+            record.setField(FPC_HEAD, headKey);
             newStuff.push_back(move(record));
         }
         content.insert(insertIt,
@@ -1011,29 +1021,32 @@ unordered_set<indexType> RecordChain::hashInsert(FieldPosNode which, keyType key
                        make_move_iterator(newStuff.end()));
         // initialize hash contents to free values and save the remaining record
         // part if needed
+        Record &beforeInsertPoint = content[firstRecord];
         if(wasSingle) {
             // copy the stuff after this hashtable into it
-            content[firstRecord + 1].copyContent(content[firstRecord]);
+            Record &inserted = content[firstRecord + 1];
+            inserted.copyContent(beforeInsertPoint);
             if(firstRecord == 0) {
                 // we copied the head, restore the record type
-                content[firstRecord + 1].setField(FP_RECORDTYPE, static_cast<uint8_t>(RT_CONT));
+                inserted.setField(FP_RECORDTYPE, static_cast<uint8_t>(RT_CONT));
             }
+            inserted.setField(FPC_HEAD, headKey);
         }
         else {
             for(indexType i = firstRecord + 1 + missingRecords; i < lastRecord; i++) {
                 content[i].hashInit(Record::hashStarts[RT_CONT], Record::getKeysPerRecord() - Record::hashStarts[RT_CONT]);
             }
         }
-        content[firstRecord].hashInit(firstKey, Record::getKeysPerRecord() - firstKey);
+        beforeInsertPoint.hashInit(firstKey, Record::getKeysPerRecord() - firstKey);
         content[lastRecord].hashInit(Record::hashStarts[RT_CONT], lastKeyPlus - Record::hashStarts[RT_CONT]);
         // link the new records
-        keyType oldEnd = content[firstRecord].getField(FP_NEXT);
+        keyType oldEnd = beforeInsertPoint.getField(FP_NEXT);
         for(indexType i = firstRecord + missingRecords; i > firstRecord; i--) {
             Record &rec = content[i];
             rec.setField(FP_NEXT, oldEnd);
             oldEnd = rec.getKey();
         }
-        content[firstRecord].setField(FP_NEXT, oldEnd);
+        beforeInsertPoint.setField(FP_NEXT, oldEnd);
         deleted = 0;
         // copy old keys into new table
         for(countType i = 0; i < used; i++) {

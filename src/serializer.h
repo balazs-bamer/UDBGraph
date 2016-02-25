@@ -698,13 +698,19 @@ ups_status_t _ups_db_find(ups_db_t *db, ups_txn_t *txn, ups_key_t *key, ups_reco
         /** Reads a character string using its length info. */
         void read(std::string &s, uint64_t len);
 
+        /** Global version allowing dumpdb to use the hash start calculations.
+         * hashStart* must be large enough to accept 4-4 values. */
+        static void calcHashStart(countType keysPerRecord, RecordType rt,
+                          countType bucketsIn, countType bucketsOut, countType bucketsUn,
+                          indexType * const hashStartRecord, countType * const hashStartKey) noexcept;
+
     protected:
         /** Calculates the total number of keys in a bucket array, together with
          * the fill space above the used buckets with prime count and the fixed fields.
          * In order to let one array grow without affecting others or the payload,
          * each array is padded to a multiple of full record size + the minimal
-         * possible bucket length. */
-        indexType calcHashLen(countType buckets) const noexcept;
+         * possible bucket length. If keyPerRecordBr is 0, it queries from Record. */
+        static indexType calcHashLen(countType buckets, countType keysPerRecordBr = 0) noexcept;
 
         /** Calculates the payload start for a given head record. */
         indexType calcPayloadStart(Record &rec) const noexcept;

@@ -278,7 +278,7 @@ void hashTableInserts() {
 	try {
 		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
 		db->create("debug2-hash-insert.udbg", 0644);
-		for(int e = 0; e < 12; e++) {
+		for(int e = 0; e < 3; e++) {
 			int n = 1 << e;
 			hashTableInserts(db, hashTableInsertsI, n);
 			hashTableInserts(db, hashTableInsertsO, n);

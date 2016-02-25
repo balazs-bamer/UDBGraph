@@ -4,7 +4,7 @@ COPYRIGHT COMES HERE
 
 #include<map>
 #include<unordered_map>
-#include<list>
+#include<deque>
 #include<cstring>
 #include<csignal>
 #include<iostream>
@@ -54,6 +54,9 @@ protected:
 		    }
 		}
 
+		/** Returns the record size. */
+		static countType getSize() { return size; }
+
         Record(keyType k, const uint8_t * const rec) : record(new uint8_t[size]), key(k) {
             memcpy(record, rec, size);
         }
@@ -88,6 +91,9 @@ protected:
 
         /** Prints the fixed fields to stdout. */
         void print() const;
+			
+		/** Prints the hash values from begin until (not including) endPlus. */	
+		void printHash(countType begin, countType endPlus);
 
     protected:
         /** Pretty-prints a field located at addr in record. */
@@ -119,8 +125,8 @@ protected:
     /** UpscaleDB database. */
     ups_db_t *db;
 
-    /** Contains the records chained into list. Key is the head key. */
-    map<keyType, list<Record>> chains;
+    /** Contains the records chained into deque. Key is the head key. */
+    map<keyType, deque<Record>> chains;
 
     /** Contains the non-head (continued) records before inserting in a chain. */
     unordered_map<keyType, Record> conts;
@@ -140,6 +146,9 @@ public:
 
     /** Prints everything to stdout. */
     void print();
+
+	/** Prints the hash for the given chain. */
+	void printHash(deque<Dump::Record> &chain);
 
 protected:
     /** Processes a key-record pair. */
@@ -185,6 +194,15 @@ void Dump::Record::print() const {
     cout << '\n';
 }
 
+void Dump::Record::printHash(countType begin, countType endPlus) {
+	for(countType i = begin; i < endPlus; i++) {
+		keyType key = doGetField(i * sizeof(keyType), record, sizeof(keyType));
+		if(key != HASH_FREE && key != HASH_DELETED) {
+			cout << '<' << key << '>';
+		}
+	}
+}
+
 void Dump::Record::print(const char * const name, int addr) const {
     cout << '(' << name << ':' << getField(addr) << ')';
 }
@@ -206,7 +224,6 @@ void Dump::Record::printRoot() const {
     print("un_bkt", FPN_UN_BUCKETS);
     print("un_use", FPN_UN_USED);
     print("un_del", FPN_UN_DELETED);
-// TODO print edge keys
 }
 
 void Dump::Record::printACL() const {
@@ -223,7 +240,6 @@ void Dump::Record::printNode() const {
     print("un_bkt", FPN_UN_BUCKETS);
     print("un_use", FPN_UN_USED);
     print("un_del", FPN_UN_DELETED);
-// TODO print edge keys
 }
 
 void Dump::Record::printEdge() const {
@@ -326,7 +342,7 @@ void Dump::postProcess() {
 
 void Dump::print() {
     if(conts.size() != 0) {
-        cout << "Broken database: oprhaned non-head records:\n";
+        cout << "Broken database: orphaned non-head records:\n";
         for(auto &kv : conts) {
             cout << "! ";
             kv.second.print();
@@ -341,8 +357,55 @@ void Dump::print() {
             record.print();
             head = false;
         }
+		printHash(kv.second);
     }
     cout << endl;
+}
+
+void Dump::printHash(deque<Record> &chain) {
+	indexType hashStartRecord[RCS_NOMORE];
+    countType hashStartKey[RCS_NOMORE];
+	Record &head = chain[0];
+	RecordType rt = static_cast<RecordType>(head.getField(FP_RECORDTYPE));
+	if(rt == RT_ROOT || rt == RT_NODE) {
+		countType keysPerRecord = Record::getSize() / sizeof(keyType);
+		RecordChain::calcHashStart(keysPerRecord, rt,
+			head.getField(FPN_IN_BUCKETS), head.getField(FPN_OUT_BUCKETS), head.getField(FPN_UN_BUCKETS),
+			hashStartRecord, hashStartKey);
+		for(int i = RCS_IN; i < RCS_PAY; i++) {
+			switch(i) {
+			case RCS_IN:
+				cout << "Hash IN: " << head.getField(FPN_IN_USED) << ": ";
+				break;
+			case RCS_OUT:
+				cout << "Hash OUT: " << head.getField(FPN_OUT_USED) << ": ";
+				break;
+			case RCS_UN:
+				cout << "Hash UN: " << head.getField(FPN_UN_USED) << ": ";
+			}
+			for(indexType j = hashStartRecord[i]; j <= hashStartRecord[i + 1]; j++) {
+				if(j >= chain.size()) {
+					cout << "Broken hash table!\n";
+					break;
+				}
+				countType begin, endPlus;
+				if(j == hashStartRecord[i]) {
+					begin = hashStartKey[i];
+				}
+				else {
+					begin = ((rt == RT_ROOT ? FPR_VAR : FPN_VAR) + sizeof(keyType) - 1) / sizeof(keyType);
+				}
+				if(j == hashStartRecord[i + 1]) {
+					endPlus = hashStartKey[i + 1];
+				}
+				else {
+					endPlus = keysPerRecord;
+				}
+				chain[j].printHash(begin, endPlus);
+			}
+			cout << '\n';
+		}
+	}
 }
 
 void Dump::process(const ups_key_t &k, const ups_record_t &r) {
@@ -350,9 +413,9 @@ void Dump::process(const ups_key_t &k, const ups_record_t &r) {
     uint8_t * const record = reinterpret_cast<uint8_t*>(r.data);
     if(*record != uint8_t(RT_CONT)) {
         // head
-        list<Record> chain;
+        deque<Record> chain;
         chain.push_back(Record(key, record));
-        chains.insert(pair<keyType, list<Record>>(key, chain));
+        chains.insert(pair<keyType, deque<Record>>(key, chain));
     }
     else {
         // continued
