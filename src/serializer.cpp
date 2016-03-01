@@ -359,15 +359,8 @@ void RecordChain::Record::save(ups_db_t *db, ups_txn_t *tr) {
 }
 
 countType RecordChain::Record::hashInit(countType startKeyInd, countType remaining) noexcept {
-    // TODO use memset
     countType ret = min(keysPerRecord - startKeyInd, remaining);
     memset(record + sizeof(keyType) * startKeyInd, 0, ret * sizeof(keyType));
-    /*keyType *hashTable = reinterpret_cast<keyType*>(record);
-    countType i = startKeyInd;
-    countType ret = 0;
-    for(; i < keysPerRecord && ret < remaining; i++, ret++) {
-        hashTable[i] = HASH_FREE;
-    }*/
     return ret;
 }
 
@@ -409,7 +402,6 @@ void RecordChain::setHead(keyType key, const uint8_t * const rec) {
     Record record(key, rec);
     pType = record.getField(FP_PAYLOADTYPE);
     content.push_back(move(record));
-// TODO check if needed    index = 0;
     RecordType rt = static_cast<RecordType>(*rec);
     if(rt == RT_NODE || rt == RT_ROOT) {
         setHashStart();
@@ -475,7 +467,9 @@ void RecordChain::reset() {
     RecordType rt = static_cast<RecordType>(getHeadField(FP_RECORDTYPE));
     if(rt == RT_NODE || rt == RT_ROOT) {
         index = hashStartRecord[RCS_PAY];
-        content[index].setIndex(hashStartKey[RCS_PAY] * sizeof(keyType));
+        if(state > RCState::HEAD || index < content.size()) {
+            content[index].setIndex(hashStartKey[RCS_PAY] * sizeof(keyType));
+        }
     }
 }
 
@@ -888,8 +882,7 @@ indexType RecordChain::setHashContent(FieldPosNode which, countType buckets, cou
     return indRecord;
 }
 
-countType RecordChain::hash(FieldPosNode which, countType buckets, keyType key, countType disp) {
-    // TODO check for consecutive keys
+countType RecordChain::hash(countType buckets, keyType key, countType disp) {
     return static_cast<countType>((key % buckets + disp * (1 + key % (buckets - 1))) % buckets);
 }
 
@@ -933,7 +926,7 @@ countType RecordChain::hashCollect(FieldPosNode which, keyType * array, countTyp
 
 indexType RecordChain::doInsert(FieldPosNode which, countType buckets, keyType key, countType * const deleted) {
     for(countType i = 0; i != buckets; i++) {
-        countType ind = hash(which, buckets, key, i);
+        countType ind = hash(buckets, key, i);
         keyType hashed = getHashContent(which, buckets, ind);
         if(hashed == HASH_FREE || hashed == HASH_DELETED) {
             if(hashed == HASH_DELETED) {

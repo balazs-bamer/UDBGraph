@@ -33,8 +33,12 @@ namespace udbgraph {
     /** Possible Graph Elem states describing chainOrig, chainNew and transaction states.
     These states are independent of the GraphElem payload changes. */
     enum class GEState {
-        /** A new or deleted object independent of both the disk DB and the Database
-         * object. Both chainOrig and chainNew are empty.*/
+        /** A partially loaded object zfter transaction end without representation
+         * in the application. */
+        INV,
+
+        /** A new object independent of both the disk DB and the Database
+         * object with unknown key. Both chainOrig and chainNew are empty.*/
         DU,
 
         /** An object after closing a transaction living in the disk DB at the end
@@ -382,20 +386,14 @@ namespace udbgraph {
     receive parameters. Because this object is independent of the carrying GraphElem,
 	changes to it between a write and a commit operation won't be persisted. */
     class Payload {
-    protected:
+    private:
         /** Although this could be found out using the static field, it is more
          * convenient to avoid writing the getter method in every subclass. */
         payloadType _type;
 
+    protected:
         /** Sets type. */
         Payload(payloadType pt) : _type(pt) {}
-
-    public:
-        /** Destructs everything. */
-        virtual ~Payload() {}
-
-        /** Returns the payload type. */
-        payloadType getType() { return _type; }
 
         /** Saves all user field content into chainNew. Important to write subclasses
          * such that they append to the content written by the superclass.
@@ -404,6 +402,15 @@ namespace udbgraph {
 
         /** Loads chainNew content, here does nothing. */
         virtual void deserialize(Converter &conv) {}
+
+    public:
+        /** Destructs everything. */
+        virtual ~Payload() {}
+
+        /** Returns the payload type. */
+        payloadType getType() { return _type; }
+
+        friend class GraphElem;
     };
 
     /** A common abstract base class for nodes and edges. This class and subclasses
@@ -478,7 +485,7 @@ namespace udbgraph {
 
         keyType getACLkey() const noexcept { return aclKey; }
 
-        /* Returns a reference to the payload. It is forbidden to define operator=
+        /** Returns a reference to the payload. It is forbidden to define operator=
          * in a Payload subclass and overwrite the returned reference value!
         The return value should be casted and saved into a reference of the contained
         type and accessed there. */
@@ -525,7 +532,10 @@ protected:
         /** Writes the fixed fields into chainNew. Here does nothing. */
         virtual void writeFixed();
 
-        /** Performs the complete serializing, calls payload.serialize(). */
+        /** Performs complete deserializing, calls payload->deserialize(). */
+        void deserialize();
+
+        /** Performs the complete serializing, calls payload->serialize(). */
         void serialize(ups_txn_t *upsTr);
 
         /** Returns the connected elems' keys, which already exist in the database.

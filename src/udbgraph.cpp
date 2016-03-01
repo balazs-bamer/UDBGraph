@@ -19,6 +19,8 @@ namespace udbgraph {
 
     string toString(GEState s) {
         switch(s) {
+        case GEState::INV:
+            return string("INV");
         case GEState::DU:
             return string("DU");
         case GEState::DK:
@@ -371,6 +373,9 @@ shared_ptr<GraphElem> Database::doBareRead(keyType key, RCState level, ups_txn_t
     }
     ret->setHead(key, reinterpret_cast<uint8_t *>(upsRecord.data));
     ret->read(upsTr, level);
+    if(level == RCState::FULL && recType != RT_ROOT) {
+        ret->deserialize();
+    }
     return ret;
 }
 
@@ -429,9 +434,10 @@ void Database::doWrite(shared_ptr<GraphElem> &ge, Transaction &tr) {
     lockedElemsMapType::iterator foundElem = allLockedElems.find(key);
     deque<shared_ptr<GraphElem>> affected;
     if(foundElem == allLockedElems.end()) {
-        // writing brand new element or a detached existing one
+        // Writing a detached existing elem. First load it to update the fixed fields
+        // and hash table if any
         if(state == GEState::DK) {
-            ge->read(upsTr, RCState::FULL);
+            ge->read(upsTr, RCState::PARTIAL);
         }
         deque<keyType> toCheck = ge->getConnectedElemsBeforeWrite();
         // check if any of them belong to an other transaction
@@ -495,9 +501,13 @@ Payload& GraphElem::pl() {
         throw IllegalMethodException("Callot get payload on deleted element.");
     case GEState::PN:
     case GEState::PP:
-        throw DebugException("Cannot get payload on P*.");
+    case GEState::INV:
+        throw DebugException("Cannot get payload on GEState::P* or INV.");
     default:
         break;
+    }
+    if(!payload) { // defined bool conversion
+        throw DebugException("No payload in GraphElem.");
     }
     return *payload;
 }
@@ -527,7 +537,6 @@ void GraphElem::setEndRootStart(shared_ptr<GraphElem> &end) {
 }
 
 void GraphElem::checkEnds(RecordType rt1, RecordType rt2, keyType key1, keyType key2) const {
-    // TODO test
     if(dynamic_cast<const Edge*>(this) == nullptr) {
         throw IllegalMethodException("setEnds, setStartRootEnd or setEndRootStart may only be called on Edge.");
     }
@@ -557,18 +566,26 @@ void GraphElem::writeFixed() {
     chainNew.setHeadField(FP_ACL, aclKey);
 }
 
-void GraphElem::serialize(ups_txn_t *tr) {
+void GraphElem::deserialize() {
     chainNew.reset();
+    payload->deserialize(converter);
+}
+
+void GraphElem::serialize(ups_txn_t *tr) {
+// TODO check if needed    chainNew.reset();
     writeFixed();
     deque<keyType> oldKeys = chainNew.getKeys();
     chainNew.reset();
-    payload->serialize(converter);
-    chainNew.stripLeftover();
+    if(state != GEState::PP) {
+        // PP hasd nothing to serialize
+        payload->serialize(converter);
+        chainNew.stripLeftover();
+    }
     chainNew.save(oldKeys, key, tr);
 }
 
 void GraphElem::checkBeforeWrite() {
-    if(state == GEState::CN || state == GEState::NN) {
+    if(state == GEState::CN || state == GEState::NN || state == GEState::INV) {
         throw ExistenceException("Trying to write an already deleted element.");
     }
 }
@@ -578,7 +595,6 @@ void GraphElem::read(ups_txn_t *tr, RCState level) {
     chainNew.clone(chainOrig);
     if(level == RCState::FULL) {
         state = GEState::CC;
-        // TODO move elsewhere payload->deserialize(converter);
     }
     else {
         state = GEState::PP;
@@ -587,8 +603,19 @@ void GraphElem::read(ups_txn_t *tr, RCState level) {
 
 void GraphElem::write(deque<shared_ptr<GraphElem>> &connected, ups_txn_t *tr) {
     serialize(tr);
-    if(state == GEState::DU) {
+    switch(state) {
+    case GEState::DU:
         state = GEState::NC;
+        break;
+    case GEState::DK:
+        state = GEState::CC;
+        break;
+    case GEState::NC:
+    case GEState::CC:
+    case GEState::PP:
+        break;
+    default:
+        throw DebugException(string("Illegal state in GraphElem::write: ") + toString(state));
     }
 }
 
@@ -600,14 +627,16 @@ void GraphElem::endTrans(TransactionEnd te) {
     chainNew.clear();
     switch(state) {
     case GEState::CN:
-    case GEState::PN:
     case GEState::NN:
         state = GEState::DU;
         break;
     case GEState::NC:
     case GEState::CC:
-    case GEState::PP:
         state = GEState::DK;
+        break;
+    case GEState::PN:
+    case GEState::PP:
+        state = GEState::INV;
         break;
     default:
         throw DebugException(string("endTrans commit: illegal state") + toString(state));
@@ -660,11 +689,17 @@ void Root::writeFixed() {
 
 deque<keyType> Edge::getConnectedElemsBeforeWrite() {
     deque<keyType> result;
-    if(state == GEState::DU) {
-        //inserting new edge, we need to register it at its ends
-        result.push_back(chainNew.getHeadField(FPE_NODE_START));
-        result.push_back(chainNew.getHeadField(FPE_NODE_END));
+    // TODO check if needed
+//    if(state == GEState::DU) {
+    keyType start = chainNew.getHeadField(FPE_NODE_START);
+    keyType end = chainNew.getHeadField(FPE_NODE_END);
+    if(start == KEY_INVALID || end == KEY_INVALID) {
+        throw ExistenceException("Edge ends not set.");
     }
+    //inserting new edge, we need to register it at its ends
+    result.push_back(start);
+    result.push_back(end);
+    //}
     return result;
 }
 

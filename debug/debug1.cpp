@@ -242,7 +242,7 @@ void loadSave(bool isNode, countType edgesIn, countType edgesOut, countType edge
 	cout << "Node: " << isNode << "  In: " << edgesIn << "  Out: " << edgesOut << "  Un: " << edgesUn << "  payLen: " << payLen << "  readOnce: " << readOnce << "  recordSize: " << recordSize << '\n';
 #endif
 	// create database and record chain
-	char filename[] = "test-load-save.udbg";
+	char filename[] = "debug1-test-load-save.udbg";
 	RecordChain::setRecordSize(recordSize);
     ups_env_t *env = nullptr;
     ups_db_t *db = nullptr;

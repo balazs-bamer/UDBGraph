@@ -278,7 +278,7 @@ void hashTableInserts() {
 	try {
 		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
 		db->create("debug2-hash-insert.udbg", 0644);
-		for(int e = 0; e < 3; e++) {
+		for(int e = 0; e < 4; e++) {
 			int n = 1 << e;
 			hashTableInserts(db, hashTableInsertsI, n);
 			hashTableInserts(db, hashTableInsertsO, n);
@@ -298,6 +298,69 @@ void hashTableInserts() {
 	}
 }
 
+typedef void CheckEndsFunc(shared_ptr<Database> &db, Transaction &tr, shared_ptr<GraphElem> &node1, shared_ptr<GraphElem> &node2, shared_ptr<GraphElem> &edge);
+
+void checkEndsNodeInsteadofEdge(shared_ptr<Database> &db, Transaction &tr, shared_ptr<GraphElem> &node1, shared_ptr<GraphElem> &node2, shared_ptr<GraphElem> &edge) {
+	node1->setStartRootEnd(node2);
+}
+
+void checkEndsSet(shared_ptr<Database> &db, Transaction &tr, shared_ptr<GraphElem> &node1, shared_ptr<GraphElem> &node2, shared_ptr<GraphElem> &edge) {
+	edge->setEnds(node1, node2);
+	edge->setEnds(node1, node2);
+}
+
+void checkEndsNotNode1(shared_ptr<Database> &db, Transaction &tr, shared_ptr<GraphElem> &node1, shared_ptr<GraphElem> &node2, shared_ptr<GraphElem> &edge) {
+	edge->setStartRootEnd(edge);
+}
+
+void checkEndsNotNode2(shared_ptr<Database> &db, Transaction &tr, shared_ptr<GraphElem> &node1, shared_ptr<GraphElem> &node2, shared_ptr<GraphElem> &edge) {
+	edge->setEndRootStart(edge);
+}
+
+void checkEndsLoop(shared_ptr<Database> &db, Transaction &tr, shared_ptr<GraphElem> &node1, shared_ptr<GraphElem> &node2, shared_ptr<GraphElem> &edge) {
+	edge->setEnds(node1, node1);
+}
+
+void checkEndsNotSet(shared_ptr<Database> &db, Transaction &tr, shared_ptr<GraphElem> &node1, shared_ptr<GraphElem> &node2, shared_ptr<GraphElem> &edge) {
+	// do not set them
+}
+
+void checkEnds(CheckEndsFunc *func, const char * const expectedMessage) {
+	shared_ptr<Database> db = Database::newInstance(1, 2, "debug2");
+	db->open("debug2a.udbg");
+	Transaction tr = db->beginTrans();
+	shared_ptr<GraphElem> node1 = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
+	db->write(node1);
+	shared_ptr<GraphElem> node2 = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
+	db->write(node2);
+	shared_ptr<GraphElem> edge = GEFactory::create(db, PT_EMPTY_UEDGE);
+	try {
+		func(db, tr, node1, node2, edge);
+		db->write(edge);
+		// this should not be reached.
+		cout << "checkEnds: expected exception haven\'t arrived:" << expectedMessage << endl;
+	}
+	catch(exception &e) {
+		const char * const what = e.what();
+		if(strstr(what, expectedMessage) == nullptr) {
+			cout << "checkEnds: " << e.what() << endl;
+		}
+	}
+	tr.abort();
+	db->close();
+}
+
+void checkEnds() {
+	checkEnds(checkEndsNodeInsteadofEdge, "setEnds, setStartRootEnd or setEndRootStart may only be called on Edge");
+	checkEnds(checkEndsSet, "Ends are already set");
+	checkEnds(checkEndsNotNode1, "End must be node");
+	checkEnds(checkEndsNotNode2, "End must be node");
+	checkEnds(checkEndsLoop, "Two ends must be different (no loop edges allowed)");
+	checkEnds(checkEndsNotSet, "Edge ends not set");
+}
+
+// TODO check payload management
+
 int main(int argc, char** argv) {
 #if USE_NVWA == 1
     nvwa::new_progname = argv[0];
@@ -312,6 +375,7 @@ int main(int argc, char** argv) {
 	nameMismatch();
 	moreWritesPerTrans();
 	hashTableInserts();
+	checkEnds();
 	// cout << "After hash insert - insert: " << UpsCounter::getInsert() << "  erase: " << UpsCounter::getErase() << "  find: " << UpsCounter::getFind() << endl;
 // TODO test edge update, edge creation checks
     return 0;

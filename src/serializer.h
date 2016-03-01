@@ -731,7 +731,7 @@ ups_status_t _ups_db_find(ups_db_t *db, ups_txn_t *txn, ups_key_t *key, ups_reco
         indexType setHashContent(FieldPosNode which, countType buckets, countType index, keyType key);
 
         /** Calculates a hash table index for the given table, key and displacement. */
-        countType hash(FieldPosNode which, countType buckets, keyType key, countType disp);
+        countType hash(countType buckets, keyType key, countType disp);
 
         /** Fills the specified hash table with HASH_FREE values. remaining has to be set to
          * the actual bucket count. */
