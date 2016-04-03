@@ -7,7 +7,9 @@ COPYRIGHT COMES HERE
 #ifndef UDB_UDBGRAPH_H
 #define UDB_UDBGRAPH_H
 
+#include<map>
 #include<unordered_map>
+#include<unordered_set>
 #include<memory>
 #include<utility>
 #include<ups/upscaledb.h>
@@ -25,6 +27,11 @@ namespace udbgraph {
     /** Handle type for transaction handles inside the library. */
     typedef uint64_t transHandleType;
 
+    /** Invalid and start values for transaction handles. */
+    enum TransactionHandle {
+        TR_INV, TR_NOMORE
+    };
+
     /** Only technical use between Database and GraphElem. */
     enum class TransactionEnd {
         ABORT, COMMIT
@@ -33,7 +40,7 @@ namespace udbgraph {
     /** Possible Graph Elem states describing chainOrig, chainNew and transaction states.
     These states are independent of the GraphElem payload changes. */
     enum class GEState {
-        /** A partially loaded object zfter transaction end without representation
+        /** A partially loaded object after transaction end without representation
          * in the application. */
         INV,
 
@@ -78,13 +85,19 @@ namespace udbgraph {
     std::string toString(GEState s);
 
     /** Empty payload types for graph elems Node, DirEdge, UndirEdge. PT_NOMORE means
-    the first free value. */
+    the first free value. PT_ANY and PT_INVALID are synonyms. */
     enum PayloadType {
-        PT_EMPTY_NODE, PT_EMPTY_DEDGE, PT_EMPTY_UEDGE, PT_NOMORE
+        PT_ANY, PT_INVALID = PT_ANY, PT_EMPTY_NODE, PT_EMPTY_DEDGE, PT_EMPTY_UEDGE, PT_NOMORE
     };
 
-    class GraphElem;
+    /** Edge end types at a node. */
+    enum class EdgeEndType {
+        Any, In, Out, Un
+    };
+
     class Transaction;
+    class Filter;
+    class GraphElem;
     class Node;
     class DirEdge;
     class UndirEdge;
@@ -93,6 +106,11 @@ namespace udbgraph {
     typedef std::unordered_map<transHandleType, ups_txn_t*> upsTransMapType;
     typedef std::unordered_map<keyType, std::shared_ptr<GraphElem>> lockedElemsMapType;
     typedef std::unordered_map<transHandleType, lockedElemsMapType> transLockedElemsMapType;
+
+    /** Hash set to contain the result of a query of neighbouring nodes or edges.
+     * It stores them as shared_ptr<GraphElem>, so the caller must know if they
+     * are edges or nodes. */
+    typedef std::unordered_set<std::shared_ptr<GraphElem>> QueryResult;
 
     /** Common class for UpscaleDB environments and databases holding all transaction
      * and GraphElem-related status information.
@@ -228,12 +246,6 @@ namespace udbgraph {
         /** Begins a transaction, which may be read-only if needed. */
         Transaction beginTrans(bool readonly = false);
 
-        /** Aborts or commits a transaction tr. The desired operation is
-        determined by te. The inner structure related to this transaction
-        will be cleared even if an UpscaleDB error occurs, so the tranaction
-        cannot be repeated. */
-        void endTrans(Transaction &tr, TransactionEnd te);
-
         /** Writes (inserts or updates) the element in the database using the specified
          * transaction. On update, the elem is overwritten in DB and the operation
          * reuses as many records as possible. The excess records are deleted or the
@@ -246,17 +258,19 @@ namespace udbgraph {
          * missing ones are created. */
         void write(std::shared_ptr<GraphElem> &ge);
 
-        /** Convenience wrapper for elems registered in Database. */
-        void write(keyType key);
-
-        /** Convenience wrapper for elems registered in Database. */
-        void write(keyType key, Transaction &tr);
-
         /** Technical use only. */
         void exportDB(RecordChain &rc) { rc.setDB(db); }
 
         /** Technical use only. */
         void exportAutoIndex(RecordChain &rc) { rc.setKeyGen(keyGen); }
+
+        /** Attaches the given elem if it is detached, does nothing if its state
+         * is NC or CC, throws exception otherwise. If it was detached, the elem
+        is re-read from disc. */
+        void attach(std::shared_ptr<GraphElem> ge, Transaction &tr);
+
+        /** See attach. */
+        void doAttach(std::shared_ptr<GraphElem> ge, Transaction &tr);
 
         /* Returns the first user root. */
         Node getRoot();
@@ -271,8 +285,17 @@ namespace udbgraph {
         /** Performs closing without mutex check. */
         void doClose();
 
-        /** See beginTrans. */
-        Transaction doBeginTrans(bool readonly);
+        /** Aborts or commits a transaction tr. The desired operation is
+        determined by te. If omitClosed is true, closed database won't throw
+        exception. The inner structure related to this transaction
+        will be cleared even if an UpscaleDB error occurs, so the tranaction
+        cannot be repeated. */
+        void endTrans(Transaction &tr, TransactionEnd te, bool omitClosed = false);
+
+        /** See beginTrans.
+        @param alreadyLocked if true, the returned object's destructor will function
+        inside a locked Database method. */
+        Transaction doBeginTrans(bool readonly, bool alreadyLocked = false);
 
         /** See endTrans. */
         void doEndTrans(Transaction &tr, TransactionEnd te);
@@ -321,18 +344,66 @@ namespace udbgraph {
         /** Performs actual write. */
         void doWrite(std::shared_ptr<GraphElem> &ge, Transaction &tr);
 
+        /** Implementation of GraphElem::getEdges(QueryResult&, direction, &fltEdge, Transaction&)
+         * operating on the node identified by key. */
+        void getEdges(QueryResult &res, std::shared_ptr<GraphElem> &ge, EdgeEndType direction, Filter &fltEdge, Transaction &tr, bool omitFailed = false);
+
+        /** Implementation of GraphElem::getEdges(QueryResult&, direction, &fltEdge)
+         * operating on the node identified by key. */
+        void getEdges(QueryResult &res, std::shared_ptr<GraphElem> &ge, EdgeEndType direction, Filter &fltEdge, bool omitFailed = false);
+
+        /** Implementation of GraphElem::getNeighbours(QueryResult&, EdgeEndType, Filter&, Filter&, Transaction&)
+         * operating on the node identifierd by key. */
+        void getNeighbours(QueryResult &res, std::shared_ptr<GraphElem> &ge, EdgeEndType direction, Filter &fltEdge, Filter &fltNode, Transaction &tr, bool omitFailed = false);
+
+        /** Implementation of GraphElem::getNeighbours(QueryResult&, EdgeEndType, Filter&, Filter&)
+         * operating on the node identifierd by key. */
+        void getNeighbours(QueryResult &res, std::shared_ptr<GraphElem> &ge, EdgeEndType direction, Filter &fltEdge, Filter &fltNode, bool omitFailed = false);
+
+        /** Implementation of GraphElem::getEdges(QueryResult&, direction, &fltEdge, Transaction&)
+         * operating on ge. */
+        void doGetEdges(QueryResult &res, std::shared_ptr<GraphElem> &ge, EdgeEndType direction, Filter &fltEdge, Transaction &tr, bool omitFailed = false);
+
+        /* Implementation of GraphElem::getNeighbours(QueryResult&, EdgeEndType, Filter&, Filter&, Transaction&)
+         * operating on ge. */
+        void doGetNeighbours(QueryResult &res, std::shared_ptr<GraphElem> &ge, EdgeEndType direction, Filter &fltEdge, Filter &fltNode, Transaction &tr, bool omitFailed = false);
+
+        /** Implementation of GraphElem::getStart(Transaction &tr)
+         * operating on the edge identifierd by key. */
+        std::shared_ptr<GraphElem> getStart(std::shared_ptr<GraphElem> &ge, Transaction &tr);
+
+        /** Implementation of GraphElem::getStart()
+         * operating on the edge identifierd by key. */
+        std::shared_ptr<GraphElem> getStart(std::shared_ptr<GraphElem> &ge);
+
+        /** Implementation of GraphElem::getEnd(Transaction &tr)
+         * operating on the edge identifierd by key. */
+        std::shared_ptr<GraphElem> getEnd(std::shared_ptr<GraphElem> &ge, Transaction &tr);
+
+        /** Implementation of GraphElem::getEnd()
+         * operating on the edge identifierd by key. */
+        std::shared_ptr<GraphElem> getEnd(std::shared_ptr<GraphElem> &g);
+
+        /* Returns the UpscaleDB transaction pointer of the given Transaction.
+        ups_txn_t *getUpsTr(Transaction &tr);*/
+
         /** Searches maximum key in UpscaleDB and returns the key after it. */
         keyType getFirstFreeKey();
+
+        friend class GraphElem;
+        friend class Transaction;
     };
 
-    /** A class encapsulating a transaction handle. This class (being POD) can be
-     * freely copied, because the actual UpscalleDB transaction structure resides
-    in the corresponding Database. A read-write transaction locks all its participating
-    GraphElements against concurrent use, a read-only one only against concurrent
-    read-write transactions. Other parts of the graph can be freely modified.
+    /** A class encapsulating a transaction handle. A read-write transaction locks
+    all its participating GraphElements against concurrent use, a read-only
+    one only against concurrent read-write transactions. Other parts of the graph
+    can be freely modified.
 
     The instances are never stored in the library, are only used in actual method
-    calls. It is OK to pass them by reference.
+    calls. They should be passed by reference, since the class does not have
+    copy constructor or copy assignemnt op. The reason is to allow RAII do a cleanup
+    after an exception. The instances track any commit or abort and copying them
+    would get around this tracking.
 
     A future version of this class will hold information of the user performing
     current database operations. As no Database connection object is designed, this
@@ -361,15 +432,34 @@ namespace udbgraph {
         /** True if the transaction is read-only. */
         bool readonly;
 
-    public:
+        /** True if the transaction has already been committed or aborted. */
+        bool over = false;
+
+        /** True if the calling Database method already locks the Database
+         * object access. Only the protected constructor sets it. */
+        bool alreadyLocked = false;
+
         /** Creates the object, can be called only by Database::beginTrans.
         Calling from the application yields useless instance, since it won't
         be registered in Database. */
         Transaction(std::shared_ptr<Database> d, bool ro) noexcept : handle(counter++), db(d), readonly(ro) {}
-        // we rely on default copy and move operations
+
+    public:
+        /** The destructor calls abort to allow RAII cleanup after an exception.
+        Important: if an explicite abort() or commit() was called before, the
+        destructor has no effect. */
+        ~Transaction();
+
+        Transaction(Transaction &&t) noexcept;
+
+        Transaction(const Transaction &t) = delete;
+
+        Transaction& operator=(Transaction &&t) noexcept;
+
+        Transaction& operator=(const Transaction &t) = delete;
 
         /** Returns the handle for Database. */
-        transHandleType getHandle() const noexcept { return handle; }
+        transHandleType getHandle() const;
 
         /** Returns if the transaction is read-only. */
         bool isReadonly() const noexcept { return readonly; }
@@ -379,6 +469,8 @@ namespace udbgraph {
 
         /** Commits the transaction. */
         void commit() { db.lock()->endTrans(*this, TransactionEnd::COMMIT); }
+
+        friend class Database;
     };
 
     /** An abstract class representing the payload in GraphElem subclasses.
@@ -413,10 +505,53 @@ namespace udbgraph {
         friend class GraphElem;
     };
 
+    /** Base class for filtering payloads when retrieving more edges or nodes. This
+     * implementation matches everything. */
+    class Filter {
+    private:
+        static Filter defaultFilter;
+
+    public:
+        /** Destructs everything. */
+        virtual ~Filter() {}
+
+        /** Returns true if this filter is suitable for filtering the given payload
+         * and the filter contents match the payload contents. This base implementation
+        always returns true. */
+        virtual bool match(Payload &pl) noexcept { return true; }
+
+        /** Returns the static member of the same type matching everyting. */
+        static Filter& get() { return defaultFilter; }
+    };
+
+    /** Filters only using the payload type. */
+    class PayloadTypeFilter final : public Filter {
+    protected:
+        /** The type to compare to. */
+        payloadType type;
+
+        /** Map containing instances used so far. */
+        static std::map<payloadType, PayloadTypeFilter> store;
+
+    public:
+        /** Stores the payload type, default is PT_ANY. */
+        PayloadTypeFilter(payloadType t = PT_ANY) noexcept : type(t) {}
+
+        /** Checks if the given payload matches the stored type. It returns true
+        if the stored type in this is PT_ANY. */
+        virtual bool match(Payload &pl) noexcept { return type == PT_ANY || pl.getType() == type; }
+
+        /** Looks up pt in store. If found, returns a reference to the instance.
+         * If not found, inserts it and returns the new reference. This is a convenience
+        mechanism for passing PayloadTypeFilters inline without instantiating in a
+        local variable. */
+        static PayloadTypeFilter& get(payloadType pt);
+    };
+
     /** A common abstract base class for nodes and edges. This class and subclasses
      * may be used only wrapped in a shared_ptr. Neither this class, nor its subclasses
      * are intended for further dubclassing by the application. */
-    class GraphElem {
+    class GraphElem : public std::enable_shared_from_this<GraphElem> {
     protected:
         /** All existing GraphElem objects have this set to be able to reach the database instance. */
         std::weak_ptr<Database> db;
@@ -491,11 +626,17 @@ namespace udbgraph {
         type and accessed there. */
         Payload& pl();
 
-        /** Convenience wrapper for elems registered in Database. */
-        void write() { db.lock()->write(key); }
+        /** Convenience wrapper for elems registered in Database or with known key.
+        See Database::write. */
+        void write() { auto ge = shared_from_this(); db.lock()->write(ge); }
 
-        /** Convenience wrapper for elems registered in Database. */
-        void write(Transaction &tr) { db.lock()->write(key, tr); }
+        /** Convenience wrapper for elems registered in Database or with known key.
+        See Database::write. */
+        void write(Transaction &tr) { auto ge = shared_from_this(); db.lock()->write(ge, tr); }
+
+        /** Convenience wrapper for elems registered in Database or with known key.
+        See Database::attach. */
+        void attach(Transaction &tr) { auto ge = shared_from_this(); db.lock()->attach(ge, tr); }
 
         /** Registers the two endpoints for the brand new edge if they are not
          * set yet. Arguments must represent nodes. For undirected edges, start
@@ -522,7 +663,71 @@ namespace udbgraph {
         from nasty casts. This method throws exception if not called on Edge. */
         void setEndRootStart(std::shared_ptr<GraphElem> &end);
 
+        /** Collects all edges into res with given direction and matching fltEdge.
+         * The function marks all returned items in the transaction.
+         * If omitFailed is set, leaves out items causing permission or transaction
+         * exception, otherwise throws exception and returns without changing anything.
+         * May not be called on edges. */
+        void getEdges(QueryResult &res, EdgeEndType direction, Filter &fltEdge, Transaction &tr, bool omitFailed = false);
+
+        /** Collects all edges into res with given direction and matching fltEdge.
+         * The function uses a temporary transaction and the returned edges will
+         * have state GEState::DK. If omitFailed is set, leaves out items causing
+         * permission or transaction exception, otherwise throws exception and
+         * returns without changing anything. May not be called on edges. */
+        void getEdges(QueryResult &res, EdgeEndType direction, Filter &fltEdge, bool omitFailed = false);
+
+        /** Collects all neighbouring nodes matching fltNode into res
+         * connected by edges of given direction and matching fltEdge.
+         * Root node is never included. The function marks all returned nodes
+         * and their edges in the transaction. If omitFailed is set, leaves out
+         * items causing permission or transaction exception, otherwise throws
+         * exception and returns without changing anything.
+         * May not be called on edges. */
+        void getNeighbours(QueryResult &res, EdgeEndType direction, Filter &fltEdge, Filter &fltNode, Transaction &tr, bool omitFailed = false);
+
+        /** Collects all neighbouring nodes matching fltNode into res
+         * connected by edges of given direction and matching fltEdge.
+         * Root node is never included. The function uses a temporary transaction
+         * and the returned nodes will have state GEState::DK. If omitFailed is set,
+         * leaves out items causing permission or transaction exception, otherwise
+         * throws exception and returns without changing anything.
+         * May not be called on edges. */
+        void getNeighbours(QueryResult &res, EdgeEndType direction, Filter &fltEdge, Filter &fltNode, bool omitFailed = false);
+
+        /** Returns the start node if this is an edge. If not, throws exception.
+         * For undirected edge, returns one of the nodes. The function marks the returned
+         * node in the transaction, or throws exception if it is held by
+        an other transaction clashing this one. Root node may not be returned, an
+        IllegalArgumentEception is thrown instead. */
+        std::shared_ptr<GraphElem> getStart(Transaction &tr);
+
+        /** Returns the start node if this is an edge. If not, throws exception.
+         * For undirected edge, returns one of the nodes. The function uses a temporary
+         * transaction and the returned nodes will have state GEState::DK.
+        Root node may not be returned, an IllegalArgumentEception is thrown instead. */
+        std::shared_ptr<GraphElem> getStart();
+
+        /** Returns the end node if this is an edge. If not, throws exception.
+         * For undirected edge, returns one of the nodes. The function marks the returned
+         * node in the transaction, or throws exception if it is held by
+        an other transaction clashing this one. Root node may not be returned, an
+        IllegalArgumentEception is thrown instead.*/
+        std::shared_ptr<GraphElem> getEnd(Transaction &tr);
+
+        /** Returns the end node if this is an edge. If not, throws exception.
+         * For undirected edge, returns one of the nodes. The function uses a temporary
+         * transaction and the returned nodes will have state GEState::DK.
+        Root node may not be returned, an IllegalArgumentEception is thrown instead. */
+        std::shared_ptr<GraphElem> getEnd();
+
 protected:
+        /** Thorws exception if the elem is not a node. */
+        void assureNode() const;
+
+        /** Thorws exception if the elem is not a node. */
+        void assureEdge() const;
+
         /** Does the necessary checks before setting ends in recordchain. */
         void checkEnds(RecordType rt1, RecordType rt2, keyType key1, keyType key2) const;
 
@@ -545,12 +750,28 @@ protected:
         /** Checks state if the elem is suitable for writing and throws exception if not. */
         void checkBeforeWrite();
 
+        /** Implementation of GraphElem::getStart(Transaction &tr)
+         * operating on the edge identifierd by key. */
+        std::shared_ptr<GraphElem> doGetStart(Transaction &tr);
+
+        /** Implementation of GraphElem::getEnd(Transaction &tr)
+         * operating on the edge identifierd by key. */
+        std::shared_ptr<GraphElem> doGetEnd(Transaction &tr);
+
+        /** Returns the actual keys for the given edge end type in this node.
+         * If the direction is Any, all directions are considered.
+         * If this node happens to be an edge, it throws exception.
+        The function reserves a suitable array, fills it with the keys
+        and delimits it with KEY_INVALID. The caller must free the array.*/
+        keyType* getEdgeKeys(EdgeEndType direction);
+
 // ----------- state transition functions ------------
 
         /** Tries to read the record chain to the given level using the stored key,
          * throws exception if not found. Sets state=CC and deserializes into payload
-         * if FULL was requested, PP otherwise. Throws exception if EMPTY was requested. */
-        void read(ups_txn_t *tr, RCState level);
+         * if FULL was requested, PP otherwise clearing the contents first if needed.
+         * Throws exception if EMPTY was requested. */
+        void read(ups_txn_t *tr, RCState level, bool clearFirst = false);
 
         /** Performs actual insert/update after serializing this. */
         virtual void write(std::deque<std::shared_ptr<GraphElem>> &connected, ups_txn_t *tr);
@@ -558,6 +779,10 @@ protected:
         /** Sets the new state, updates payload, chainOrig and chainNew after
         according to te's value (ABORT or COMMIT). */
         void endTrans(TransactionEnd te);
+
+        /** Implementation of doGetStart and doGetEnd, returning a smart pointer
+         * to node identified by theEnd. */
+        std::shared_ptr<GraphElem> doGetNodeOfEdge(keyType theEnd, Transaction &tr);
 
         // needed to be able to hide unnecessary interface
         friend class Database;

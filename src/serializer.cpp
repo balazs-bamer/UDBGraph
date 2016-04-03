@@ -554,9 +554,13 @@ void RecordChain::stripLeftover() {
     content.erase(content.begin() + index + 1, content.end());
 }
 
-void RecordChain::load(keyType key, ups_txn_t *tr, RCState level) {
+void RecordChain::load(keyType key, ups_txn_t *tr, RCState level, bool clearFirst) {
     if(level == RCState::EMPTY) {
         throw DebugException("Cannot read no records (requested level = RCState::EMPTY).");
+    }
+    if(clearFirst) {
+        // force clearing
+        state = RCState::EMPTY;
     }
     if(level <= state) {
         // nothing to do
@@ -592,7 +596,7 @@ void RecordChain::load(keyType key, ups_txn_t *tr, RCState level) {
         ups_status_t result = record.load(db, key, tr);
         if(result == UPS_KEY_NOT_FOUND) {
             if(content.size() == 0) {
-                throw ExistenceException("The element cannot be read might have been deleted meanwhile.");
+                throw ExistenceException("The element cannot be read, might have been deleted meanwhile.");
             }
             else {
                 throw CorruptionException("Broken record chain.");
@@ -787,6 +791,24 @@ void RecordChain::calcHashStart(countType keysPerRecord, RecordType rt,
     hashStartKey[RCS_PAY] = nextStart % keysPerRecord;
 }
 
+countType RecordChain::hashCollect(FieldPosNode which, keyType *array) const noexcept {
+    int hashStartInd = (which - FPN_IN_BUCKETS) / FR_SPAN;
+    // which is FPN_*_BUCKETS
+    countType remaining = content[0].getField(which);
+    indexType startRecInd = hashStartRecord[hashStartInd];
+    indexType endRecInd = hashStartRecord[hashStartInd + 1];
+    countType startKeyInd = hashStartKey[hashStartInd];
+    countType restKeyInd = Record::hashStarts[RT_CONT];
+    keyType *now = array;
+    for(indexType i = startRecInd; i <= endRecInd; i++) {
+        if(i > startRecInd) {
+            startKeyInd = restKeyInd;
+        }
+        countType examined = content[i].hashCollect(startKeyInd, now, remaining);
+        remaining -= examined;
+    }
+    return now - array;
+}
 
 indexType RecordChain::calcHashLen(countType buckets, countType keysPerRecordBr) noexcept {
     // We use the whole record length, not only the space available for hash,
@@ -907,23 +929,6 @@ void RecordChain::hashInit() noexcept {
     hashInit(FPN_UN_BUCKETS, getHeadField((FPN_UN_BUCKETS)));
 }
 
-countType RecordChain::hashCollect(FieldPosNode which, keyType * array, countType remaining) const noexcept {
-    int hashStartInd = (which - FPN_IN_BUCKETS) / FR_SPAN;
-    indexType startRecInd = hashStartRecord[hashStartInd];
-    indexType endRecInd = hashStartRecord[hashStartInd + 1];
-    countType startKeyInd = hashStartKey[hashStartInd];
-    countType restKeyInd = Record::hashStarts[RT_CONT];
-    keyType *now = array;
-    for(indexType i = startRecInd; i <= endRecInd; i++) {
-        if(i > startRecInd) {
-            startKeyInd = restKeyInd;
-        }
-        countType examined = content[i].hashCollect(startKeyInd, now, remaining);
-        remaining -= examined;
-    }
-    return now - array;
-}
-
 indexType RecordChain::doInsert(FieldPosNode which, countType buckets, keyType key, countType * const deleted) {
     for(countType i = 0; i != buckets; i++) {
         countType ind = hash(buckets, key, i);
@@ -956,7 +961,7 @@ unordered_set<indexType> RecordChain::hashInsert(FieldPosNode which, keyType key
         }
         // save the old contents
         keyType *oldKeys = new keyType[used + 1];
-        countType found = hashCollect(which, oldKeys, buckets);
+        countType found = hashCollect(which, oldKeys);
         if(found != used) {
             throw DebugException("Hash content does not match \'used\' count.");
         }

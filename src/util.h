@@ -119,6 +119,18 @@ namespace udbgraph {
         static bool isLittle() { return littleEndian; }
     };
 
+    /** Class template for automatic array deallocation. */
+    template<typename T>
+    class AutoDeleter final {
+        const T * const pointer;
+
+    public:
+        AutoDeleter(const T * const p) : pointer(p) {}
+
+        ~AutoDeleter() {
+            delete[] pointer;
+        }
+    };
 }
 
 #endif

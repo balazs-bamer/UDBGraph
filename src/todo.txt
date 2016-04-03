@@ -1,3 +1,5 @@
+- Revise Doxygen docs: include exception names, document arguments and return values.
+
 - DummpDB: output edge lists, too.
 
 - getNeighbours/getEdges: gets a comparison object and if the matched item is free, it returns. If locked by an other transaction, throws Exception.

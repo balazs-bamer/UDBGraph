@@ -94,13 +94,11 @@ void Database::create(const char *filename, uint32_t mode, size_t recordSize) {
     RecordChain::setRecordSize(recordSize);
     keyGen = new KeyGenerator<keyType>(KEY_ROOT);
     shared_ptr<GraphElem> root(new Root(shared_from_this(), verMajor, verMinor, appName));
-    Transaction tr = doBeginTrans(false);
+    Transaction tr = doBeginTrans(false, true);
     doWrite(root, tr);
     doEndTrans(tr, TransactionEnd::COMMIT);
     ready = true;
 }
-
-#include<iostream>
 
 void Database::open(const char *filename) {
     lock_guard<mutex> lck(accessMtx);
@@ -134,7 +132,7 @@ void Database::open(const char *filename) {
     check(ups_cursor_move(cursor, &key, &rec, UPS_CURSOR_FIRST));
     check(ups_cursor_close(cursor));
     RecordChain::setRecordSize(rec.size);
-    Transaction tr = doBeginTrans(false);
+    Transaction tr = doBeginTrans(true, true);
     bool matches = dynamic_pointer_cast<Root>(doRead(KEY_ROOT, tr, RCState::HEAD))->doesMatch(verMajor, verMinor, appName);
     doEndTrans(tr, TransactionEnd::ABORT);
     ready = true;
@@ -160,16 +158,10 @@ Transaction Database::beginTrans(bool readonly) {
     return doBeginTrans(readonly);
 }
 
-void Database::endTrans(Transaction &tr, TransactionEnd te) {
-    lock_guard<mutex> lck(accessMtx);
-    isReady();
-    doEndTrans(tr, te);
-}
-
 void Database::write(shared_ptr<GraphElem> &ge) {
     lock_guard<mutex> lck(accessMtx);
     isReady();
-    Transaction tr = doBeginTrans(false);
+    Transaction tr = doBeginTrans(false, true);
     doWrite(ge, tr);
     doEndTrans(tr, TransactionEnd::COMMIT);
 }
@@ -180,26 +172,48 @@ void Database::write(shared_ptr<GraphElem> &ge, Transaction &tr) {
     doWrite(ge, tr);
 }
 
-void Database::write(keyType key) {
+void Database::attach(std::shared_ptr<GraphElem> ge, Transaction &tr) {
     lock_guard<mutex> lck(accessMtx);
     isReady();
-    auto foundElem = allLockedElems.find(key);
-    if(foundElem == allLockedElems.end()) {
-        throw ExistenceException("Elem not registered in Database, use db.write().");
-    }
-    Transaction tr = doBeginTrans(false);
-    doWrite(foundElem->second, tr);
-    doEndTrans(tr, TransactionEnd::COMMIT);
+    doAttach(ge, tr);
 }
 
-void Database::write(keyType key, Transaction &tr) {
-    lock_guard<mutex> lck(accessMtx);
-    isReady();
-    auto foundElem = allLockedElems.find(key);
-    if(foundElem == allLockedElems.end()) {
-        throw ExistenceException("Elem not registered in Database, use db.write().");
+void Database::doAttach(std::shared_ptr<GraphElem> ge, Transaction &tr) {
+    GEState state;
+    switch(state = ge->getState()) {
+    case GEState::NC:
+    case GEState::CC:
+        // nothing to do
+        return;
+    case GEState::DK:
+        // this will be interesting
+        break;
+    default:
+        throw DebugException(string("Illegal state in Database::doAttach: ") + toString(state));
     }
-    doWrite(foundElem->second, tr);
+    keyType key = ge->getKey();
+    transHandleType trHandle = tr.getHandle();
+    transLockedElemsMapType::iterator foundLockedElems = getCheckTransLocked(trHandle);
+    auto foundUpsTrans = upsTransactions.find(trHandle);
+    ups_txn_t *upsTr = foundUpsTrans->second;
+    lockedElemsMapType::iterator foundElem = allLockedElems.find(key);
+    if(foundElem != allLockedElems.end()) {
+        lockedElemsMapType::iterator foundInTr = foundLockedElems->second.find(key);
+        if(foundInTr != foundLockedElems->second.end()) {
+            throw DebugException("doAttach was called on a detached elem but it was found registered in this transaction.");
+        }
+        // somebody else owns it
+        checkKeyVsTrans(key, tr);
+        // now it is sure that this transaction is read-only and the one that
+        // owns it is also read-only
+    }
+    ge->read(upsTr, RCState::FULL, true);
+    checkACL(ge, tr);
+    registerElem(ge, foundLockedElems, tr);
+    // make sure the payload reflects the disc contents
+    if(ge->getType() != RT_ROOT) {
+        ge->deserialize();
+    }
 }
 
 void Database::isReady() {
@@ -221,10 +235,21 @@ void Database::doClose() {
     }
 }
 
-Transaction Database::doBeginTrans(bool readonly) {
+void Database::endTrans(Transaction &tr, TransactionEnd te, bool omitClosed) {
+    lock_guard<mutex> lck(accessMtx);
+    if(!omitClosed) {
+        isReady();
+    }
+    if(ready) {
+        doEndTrans(tr, te);
+    }
+}
+
+Transaction Database::doBeginTrans(bool readonly, bool alreadyLocked) {
     ups_txn_t *h;
     check(ups_txn_begin(&h, env, nullptr, nullptr, readonly ?  UPS_TXN_READ_ONLY : 0));
     Transaction tr = Transaction(shared_from_this(), readonly);
+    tr.alreadyLocked = alreadyLocked;
     transHandleType trHandle = tr.getHandle();
     // insert UpscaleDB transaction
     upsTransactions.insert(pair<transHandleType, ups_txn_t*>(trHandle, h));
@@ -235,6 +260,10 @@ Transaction Database::doBeginTrans(bool readonly) {
 }
 
 void Database::doEndTrans(Transaction &tr, TransactionEnd te) {
+    if(tr.over) {
+        return;
+    }
+    tr.over = true;
     transHandleType trHandle = tr.getHandle();
     auto foundUpsTrans = upsTransactions.find(trHandle);
     auto foundLockedElems = getCheckTransLocked(trHandle);
@@ -385,32 +414,36 @@ shared_ptr<GraphElem> Database::doRead(keyType key, Transaction &tr, RCState lev
     auto foundUpsTrans = upsTransactions.find(trHandle);
     ups_txn_t *upsTr = foundUpsTrans->second;
     lockedElemsMapType::iterator foundElem = allLockedElems.find(key);
+    shared_ptr<GraphElem> ret;
     if(foundElem == allLockedElems.end()) {
         // not found, we must read it from disk
-        shared_ptr<GraphElem> ret = doBareRead(key, level, upsTr);
+        ret = doBareRead(key, level, upsTr);
         checkACL(ret, tr);
         registerElem(ret, foundLockedElems, tr);
-        return ret;
     }
     else {
         lockedElemsMapType::iterator foundInTr = foundLockedElems->second.find(key);
         if(foundInTr != foundLockedElems->second.end()) {
             // we own it, no more checks and registering
-            shared_ptr<GraphElem> ret = foundInTr->second;
-            ret->read(upsTr, level);
-            return ret;
+            ret = foundInTr->second;
         }
         else {
             // somebody else owns it
             checkKeyVsTrans(key, tr);
             // now it is sure that this transaction is read-only and the one that
             // owns it is also read-only
-            shared_ptr<GraphElem> ret = foundElem->second;
+            ret = foundElem->second;
             checkACL(ret, tr);
             registerElem(ret, foundLockedElems, tr);
-            return ret;
+        }
+        ret->read(upsTr, level);
+        // if everything is read, and it is not root, we must deserialize it
+        // to make sure the payload reflects the disc contents
+        if(level == RCState::FULL && ret->getType() != RT_ROOT) {
+            ret->deserialize();
         }
     }
+    return ret;
 }
 
 void Database::doWrite(shared_ptr<GraphElem> &ge, Transaction &tr) {
@@ -437,7 +470,9 @@ void Database::doWrite(shared_ptr<GraphElem> &ge, Transaction &tr) {
         // Writing a detached existing elem. First load it to update the fixed fields
         // and hash table if any
         if(state == GEState::DK) {
-            ge->read(upsTr, RCState::PARTIAL);
+            // the record chain may be stale, re-read it
+            // its payload part is not needed, we will overwrite it
+            ge->read(upsTr, RCState::PARTIAL, true);
         }
         deque<keyType> toCheck = ge->getConnectedElemsBeforeWrite();
         // check if any of them belong to an other transaction
@@ -455,6 +490,173 @@ void Database::doWrite(shared_ptr<GraphElem> &ge, Transaction &tr) {
     }
     ge->write(affected, upsTr);
 }
+
+void Database::getEdges(QueryResult &res, std::shared_ptr<GraphElem> &ge, EdgeEndType direction, Filter &fltEdge, Transaction &tr, bool omitFailed) {
+    lock_guard<mutex> lck(accessMtx);
+    isReady();
+    doGetEdges(res, ge, direction, fltEdge, tr, omitFailed);
+}
+
+void Database::getEdges(QueryResult &res, std::shared_ptr<GraphElem> &ge, EdgeEndType direction, Filter &fltEdge, bool omitFailed) {
+    lock_guard<mutex> lck(accessMtx);
+    isReady();
+    Transaction tr = doBeginTrans(true, true);
+    doGetEdges(res, ge, direction, fltEdge, tr, omitFailed);
+    doEndTrans(tr, TransactionEnd::COMMIT);
+}
+
+void Database::getNeighbours(QueryResult &res, std::shared_ptr<GraphElem> &ge, EdgeEndType direction, Filter &fltEdge, Filter &fltNode, Transaction &tr, bool omitFailed) {
+    lock_guard<mutex> lck(accessMtx);
+    isReady();
+    doGetNeighbours(res, ge, direction, fltEdge, fltNode, tr, omitFailed);
+}
+
+void Database::getNeighbours(QueryResult &res, std::shared_ptr<GraphElem> &ge, EdgeEndType direction, Filter &fltEdge, Filter &fltNode, bool omitFailed) {
+    lock_guard<mutex> lck(accessMtx);
+    isReady();
+    Transaction tr = doBeginTrans(true, true);
+    doGetNeighbours(res, ge, direction, fltEdge, fltNode, tr, omitFailed);
+    doEndTrans(tr, TransactionEnd::COMMIT);
+}
+
+enum class AfterCheck {
+    JustRead, Ours, Others
+};
+
+/** Hash function for shared pointers of GraphElems using their keys. */
+template <>
+struct hash<shared_ptr<GraphElem>> {
+    size_t operator()(const shared_ptr<GraphElem> &ge) const {
+        return static_cast<size_t>(ge->getKey());
+    }
+};
+
+/** Predicate function for shared pointers of GraphElems using their keys. */
+template <>
+struct equal_to<shared_ptr<GraphElem>> {
+    size_t operator()(const shared_ptr<GraphElem> &ge1, const shared_ptr<GraphElem> &ge2) const {
+        return ge1->getKey() == ge2->getKey();
+    }
+};
+
+void Database::doGetEdges(QueryResult &queryResult, shared_ptr<GraphElem> &ge, EdgeEndType direction, Filter &fltEdge, Transaction &tr, bool omitFailed) {
+    // attach the originating graph elem if in state DK
+    doAttach(ge, tr);
+    // For efficiency I use a simple array here.
+    const keyType *edgeKeys = ge->getEdgeKeys(direction);
+    // needed to ensure deletion even at exceptions
+    AutoDeleter<keyType> deleteKeys(edgeKeys);
+    transHandleType trHandle = tr.getHandle();
+    transLockedElemsMapType::iterator foundLockedElems = getCheckTransLocked(trHandle);
+    auto foundUpsTrans = upsTransactions.find(trHandle);
+    ups_txn_t *upsTr = foundUpsTrans->second;
+    const keyType *keyInd;
+    unordered_map<shared_ptr<GraphElem>, AfterCheck> checkResults;
+    // First gather graph elems and check them to allow possible exceptions be
+    // raised before we store the stuff in res
+    for(keyInd = edgeKeys; *keyInd != KEY_INVALID; keyInd++) {
+        lockedElemsMapType::iterator foundElem = allLockedElems.find(*keyInd);
+        shared_ptr<GraphElem> ge;
+        if(foundElem == allLockedElems.end()) {
+            // not found, we must read it from disk
+            try {
+                ge = doBareRead(*keyInd, RCState::FULL, upsTr);
+                checkACL(ge, tr);
+                checkResults[ge] = AfterCheck::JustRead;
+            }
+            catch(PermissionException &pe) {
+                if(!omitFailed) {
+                    throw;
+                }
+            }
+        }
+        else {
+            lockedElemsMapType::iterator foundInTr = foundLockedElems->second.find(*keyInd);
+            if(foundInTr != foundLockedElems->second.end()) {
+                // we own it, no more checks and registering
+                ge = foundInTr->second;
+                checkResults[ge] = AfterCheck::Ours;
+            }
+            else {
+                try {
+                    // somebody else owns it
+                    checkKeyVsTrans(*keyInd, tr);
+                    // now it is sure that this transaction is read-only and the one that
+                    // owns it is also read-only
+                    ge = foundElem->second;
+                    checkACL(ge, tr);
+                    checkResults[ge] = AfterCheck::Others;
+                }
+                catch(PermissionException &pe) {
+                    if(!omitFailed) {
+                        throw;
+                    }
+                }
+                catch(TransactionException &te) {
+                    if(!omitFailed) {
+                        throw;
+                    }
+                }
+            }
+        }
+    }
+    // read them fully if needed and perform filtering
+    for(auto &i : checkResults) {
+        AfterCheck checkResult = i.second;
+        shared_ptr<GraphElem> ge = i.first;
+        if(checkResult == AfterCheck::Ours || checkResult == AfterCheck::Others) {
+            ge->read(upsTr, RCState::FULL);
+            // if everything is read, and it is not root, we must deserialize it
+            // to make sure the payload reflects the disc contents
+            ge->deserialize();
+        }
+        if(fltEdge.match(ge->pl())) {
+            if(checkResult == AfterCheck::JustRead || checkResult == AfterCheck::Others) {
+                registerElem(ge, foundLockedElems, tr);
+            }
+            queryResult.insert(ge);
+        }
+    }
+}
+
+void Database::doGetNeighbours(QueryResult &res, shared_ptr<GraphElem> &ge, EdgeEndType direction, Filter &fltEdge, Filter &fltNode, Transaction &tr, bool omitFailed) {
+    // TODO implement only when doGetEdges is functional
+}
+
+shared_ptr<GraphElem> Database::getStart(shared_ptr<GraphElem> &ge, Transaction &tr) {
+    lock_guard<mutex> lck(accessMtx);
+    isReady();
+    return ge->doGetStart(tr);
+}
+
+shared_ptr<GraphElem> Database::getStart(shared_ptr<GraphElem> &ge) {
+    lock_guard<mutex> lck(accessMtx);
+    isReady();
+    Transaction tr = doBeginTrans(true, true);
+    shared_ptr<GraphElem> ret = ge->doGetStart(tr);
+    doEndTrans(tr, TransactionEnd::COMMIT);
+    return ret;
+}
+
+shared_ptr<GraphElem> Database::getEnd(shared_ptr<GraphElem> &ge, Transaction &tr) {
+    lock_guard<mutex> lck(accessMtx);
+    isReady();
+    return ge->doGetEnd(tr);
+}
+
+shared_ptr<GraphElem> Database::getEnd(shared_ptr<GraphElem> &ge) {
+    lock_guard<mutex> lck(accessMtx);
+    isReady();
+    Transaction tr = doBeginTrans(true, true);
+    shared_ptr<GraphElem> ret = ge->doGetEnd(tr);
+    doEndTrans(tr, TransactionEnd::COMMIT);
+    return ret;
+}
+
+/*ups_txn_t *Database::getUpsTr(Transaction &tr) {
+    auto foundUpsTrans = upsTransactions.find(tr.getHandle());
+    return foundUpsTrans->second;
+}*/
 
 keyType Database::getFirstFreeKey() {
     ups_key_t key;
@@ -484,7 +686,48 @@ keyType Database::getFirstFreeKey() {
     return needle + 1;
 }
 
-transHandleType Transaction::counter = 0;
+transHandleType Transaction::counter = TR_NOMORE;
+
+Transaction::~Transaction() {
+    if(alreadyLocked) {
+        db.lock()->doEndTrans(*this, TransactionEnd::ABORT);
+    }
+    else {
+        db.lock()->endTrans(*this, TransactionEnd::ABORT, true);
+    }
+}
+
+inline Transaction::Transaction(Transaction &&t) noexcept : handle(t.handle),
+    db(std::move(t.db)), readonly(t.readonly), over(t.over) {
+    t.handle = TR_INV;
+};
+
+inline Transaction& Transaction::operator=(Transaction &&t) noexcept {
+    handle = t.handle; db = std::move(t.db); readonly = t.readonly; over = t.over;
+    // make the original instance unusable
+    t.handle = TR_INV;
+    return *this;
+}
+
+transHandleType Transaction::getHandle() const {
+    if(handle == TR_INV) {
+        throw DebugException("getHandle: not allowed to access the instance that was moved from.");
+    }
+    return handle;
+}
+
+map<payloadType, PayloadTypeFilter> PayloadTypeFilter::store;
+
+PayloadTypeFilter& PayloadTypeFilter::get(payloadType pt) {
+    auto found = store.find(pt);
+    if(found == store.end()) {
+        store.insert(pair<payloadType, PayloadTypeFilter>(pt, PayloadTypeFilter(pt)));
+        return store[pt];
+    }
+    else {
+        return found->second;
+    }
+}
 
 GraphElem::GraphElem(shared_ptr<Database> &d, RecordType rt, unique_ptr<Payload> pl) :
     db(d), recordType(rt), payload(std::move(pl)), chainOrig(rt, payload->getType()), chainNew(rt, payload->getType()),
@@ -536,10 +779,68 @@ void GraphElem::setEndRootStart(shared_ptr<GraphElem> &end) {
     chainNew.setHeadField(FPE_NODE_END, keyEnd);
 }
 
-void GraphElem::checkEnds(RecordType rt1, RecordType rt2, keyType key1, keyType key2) const {
-    if(dynamic_cast<const Edge*>(this) == nullptr) {
-        throw IllegalMethodException("setEnds, setStartRootEnd or setEndRootStart may only be called on Edge.");
+void GraphElem::getEdges(QueryResult &res, EdgeEndType direction, Filter &fltEdge, Transaction &tr, bool omitFailed) {
+    assureNode();
+    auto ge = shared_from_this();
+    db.lock()->getEdges(res, ge, direction, fltEdge, tr, omitFailed);
+}
+
+void GraphElem::getEdges(QueryResult &res, EdgeEndType direction, Filter &fltEdge, bool omitFailed) {
+    assureNode();
+    auto ge = shared_from_this();
+    db.lock()->getEdges(res, ge, direction, fltEdge, omitFailed);
+}
+
+void GraphElem::getNeighbours(QueryResult &res, EdgeEndType direction, Filter &fltEdge, Filter &fltNode, Transaction &tr, bool omitFailed) {
+    assureNode();
+    auto ge = shared_from_this();
+    db.lock()->getNeighbours(res, ge, direction, fltEdge, fltNode, tr, omitFailed);
+}
+
+void GraphElem::getNeighbours(QueryResult &res, EdgeEndType direction, Filter &fltEdge, Filter &fltNode, bool omitFailed) {
+    assureNode();
+    auto ge = shared_from_this();
+    db.lock()->getNeighbours(res, ge, direction, fltEdge, fltNode, omitFailed);
+}
+
+shared_ptr<GraphElem> GraphElem::getStart(Transaction &tr) {
+    assureEdge();
+    auto ge = shared_from_this();
+    return db.lock()->getStart(ge, tr);
+}
+
+shared_ptr<GraphElem> GraphElem::getStart() {
+    assureEdge();
+    auto ge = shared_from_this();
+    return db.lock()->getStart(ge);
+}
+
+shared_ptr<GraphElem> GraphElem::getEnd(Transaction &tr) {
+    assureEdge();
+    auto ge = shared_from_this();
+    return db.lock()->getEnd(ge, tr);
+}
+
+shared_ptr<GraphElem> GraphElem::getEnd() {
+    assureEdge();
+    auto ge = shared_from_this();
+    return db.lock()->getEnd(ge);
+}
+
+void GraphElem::assureNode() const {
+    if(dynamic_cast<const Node*>(this) == nullptr) {
+        throw IllegalMethodException("This method may only be called on a Node.");
     }
+}
+
+void GraphElem::assureEdge() const {
+    if(dynamic_cast<const Edge*>(this) == nullptr) {
+        throw IllegalMethodException("This method may only be called on an Edge.");
+    }
+}
+
+void GraphElem::checkEnds(RecordType rt1, RecordType rt2, keyType key1, keyType key2) const {
+    assureEdge();
     if(chainNew.getHeadField(FPE_NODE_START) != static_cast<keyType>(KEY_INVALID) ||
         chainNew.getHeadField(FPE_NODE_END) != static_cast<keyType>(KEY_INVALID)) {
         throw ExistenceException("Ends are already set.");
@@ -577,9 +878,12 @@ void GraphElem::serialize(ups_txn_t *tr) {
     deque<keyType> oldKeys = chainNew.getKeys();
     chainNew.reset();
     if(state != GEState::PP) {
-        // PP hasd nothing to serialize
+        // PP has nothing to serialize
         payload->serialize(converter);
         chainNew.stripLeftover();
+    }
+    else {
+        throw DebugException("serialize may not be called on state PP.");
     }
     chainNew.save(oldKeys, key, tr);
 }
@@ -590,14 +894,61 @@ void GraphElem::checkBeforeWrite() {
     }
 }
 
-void GraphElem::read(ups_txn_t *tr, RCState level) {
-    chainOrig.load(key, tr, level);
+shared_ptr<GraphElem> GraphElem::doGetStart(Transaction &tr) {
+    return doGetNodeOfEdge(chainNew.getHeadField(FPE_NODE_START), tr);
+}
+
+shared_ptr<GraphElem> GraphElem::doGetEnd(Transaction &tr) {
+    return doGetNodeOfEdge(chainNew.getHeadField(FPE_NODE_END), tr);
+}
+
+keyType *GraphElem::getEdgeKeys(EdgeEndType direction) {
+    keyType *keys;
+    countType numKeys;
+    switch(direction) {
+    case EdgeEndType::Any:
+        keyType numIn, numOut, numUn;
+        numIn = chainNew.getHeadField(FPN_IN_USED);
+        numOut = chainNew.getHeadField(FPN_OUT_USED);
+        numUn = chainNew.getHeadField(FPN_UN_USED);
+        numKeys = numIn + numOut + numUn;
+        keys = new keyType[numKeys + 1];
+        chainNew.hashCollect(FPN_IN_BUCKETS, keys);
+        chainNew.hashCollect(FPN_OUT_BUCKETS, keys + numIn);
+        chainNew.hashCollect(FPN_UN_BUCKETS, keys + numIn + numOut);
+        break;
+    case EdgeEndType::In:
+        numKeys = chainNew.getHeadField(FPN_IN_USED);
+        keys = new keyType[numKeys + 1];
+        chainNew.hashCollect(FPN_IN_BUCKETS, keys);
+        break;
+    case EdgeEndType::Out:
+        numKeys = chainNew.getHeadField(FPN_OUT_USED);
+        keys = new keyType[numKeys + 1];
+        chainNew.hashCollect(FPN_OUT_BUCKETS, keys);
+        break;
+    case EdgeEndType::Un:
+        numKeys = chainNew.getHeadField(FPN_UN_USED);
+        keys = new keyType[numKeys + 1];
+        chainNew.hashCollect(FPN_UN_BUCKETS, keys);
+    }
+    keys[numKeys] = KEY_INVALID;
+    return keys;
+}
+
+void GraphElem::read(ups_txn_t *tr, RCState level, bool clearFirst) {
+    chainOrig.load(key, tr, level, clearFirst);
     chainNew.clone(chainOrig);
-    if(level == RCState::FULL) {
+    // we do not deserializing here, since this method may have been called
+    // from doWrite
+    if(chainOrig.getState() == RCState::FULL) {
         state = GEState::CC;
     }
     else {
+        // TODO do we need this? If we come from doWrite, leave it so.
+//        if(state != GEState::DK) {
         state = GEState::PP;
+  //      }
     }
 }
 
@@ -642,6 +993,24 @@ void GraphElem::endTrans(TransactionEnd te) {
         throw DebugException(string("endTrans commit: illegal state") + toString(state));
         break;
     }
+}
+
+shared_ptr<GraphElem> GraphElem::doGetNodeOfEdge(keyType theEnd, Transaction &tr) {
+    // do not return root
+    if(theEnd == KEY_ROOT) {
+        throw IllegalArgumentException("getStart and getEnd may not return the root node.");
+    }
+    switch(state) {
+    case GEState::DK:
+        db.lock()->doAttach(shared_from_this(), tr);
+        // leak further
+    case GEState::NC:
+    case GEState::CC:
+        break;
+    default:
+        throw DebugException(string("doGetNodeOfEdge: illegal state") + toString(state));
+    }
+    return db.lock()->doRead(theEnd, tr, RCState::FULL);
 }
 
 void AbstractNode::addEdge(FieldPosNode where, keyType edgeKey, ups_txn_t *tr) {

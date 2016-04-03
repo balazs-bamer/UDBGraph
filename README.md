@@ -169,6 +169,7 @@ Class name			|Defined in     |Description
 CounterMap    		|util.h			|Associative container template supporting incrementing and decrementing values by key and querying count by key.
 KeyGenerator  		|util.h    		|Class template providing a unique key generator by incrementing a counter.
 LockGuard2    		|util.h			|Class for simultaneously locking two mutexes and have the destructor for RAII cleanup in case of an exception.
+AutoDeleter			|util.h			|Class template for automatic array deallocation.
 BaseException 		|exception.h	|Common base class for all custom exceptions. It stores the description in a character array, and if enabled, appends a demangled backtrace to it. Backtrace id enabled if DEBUG is defined and we use a glibc and glibcxx.
 UpsException 		|exception.h	|Exception class for UpscaleDB BaseException handling, uses its built-in messages.
 DebugException 		|exception.h	|Intended for reporting internal errors of the UDBGraph library. Should not occur if mature enough.
@@ -188,6 +189,8 @@ Converter			|serializer.h	|A wrapper class for RecordChain to hide unnecessary p
 Database			|udbgraph.h		|Common class for UpscaleDB environments and databases holding all transaction and GraphElem-related status information.
 Transaction			|udbgraph.h		|A class encapsulating a transaction handle. This class (being POD) can be freely copied, because the actual UpscalleDB transaction structure resides in the corresponding Database. 
 Payload				|udbgraph.h		|An abstract class representing the payload in GraphElem subclasses. Neither this class, nor its subclasses are intended for further dubclassing by the application.
+Filter				|udbgraph.h		|Base class for filtering payloads when retrieving more edges or nodes. This implementation matches everything.
+PayloadTypeFilter	|udbgraph.h		|Filters only using the payload type.
 GraphElem			|udbgraph.h		|A common abstract base class for nodes and edges.
 AbstractNode		|udbgraph.h		|A common ancestor for Node and Root.
 Node				|udbgraph.h		|A general node class represents actual node types in the graph.

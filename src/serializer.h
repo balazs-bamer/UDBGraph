@@ -123,7 +123,7 @@ ups_status_t _ups_db_find(ups_db_t *db, ups_txn_t *txn, ups_key_t *key, ups_reco
     };
 
     /** Root fixed field positions in byte. Together with a smallest hash table
-    length of 5 this structure implies record sizes >= 240. 256 is a good smallest
+    length of 5 this structure implies record sizes >= 220. 256 is a good smallest
     value. */
     enum FieldPosRoot {
         FPR_VER_MAJOR = FPN_VAR,
@@ -613,22 +613,23 @@ ups_status_t _ups_db_find(ups_db_t *db, ups_txn_t *txn, ups_key_t *key, ups_reco
          * considering the actual record type. */
         uint64_t getHeadField(uint32_t fieldStart) const;
 
-        /** Gathers the old keys from content. */
+        /** Gathers the old record keys from content. */
         std::deque<keyType> getKeys() const;
 
-        /**
-         * Adds an edge to the indicated array and writes the changed records
+        /** Adds an edge to the indicated array and writes the changed records
          * to disk. If there was no more free space in the free array, inserts
-         * new record(s). */
+         * new record(s).
+         @param which the hash table to use. This is an enum value FPN_*_BUCKETS
+         @param edgeKey the edge to be added to the hash table.*/
         void addEdge(FieldPosNode which, keyType edgeKey, ups_txn_t *tr);
 
         /** Removes all records after the one pointed by index. */
         void stripLeftover();
 
-        /** Reads the chain content from DB to the requested level. Sets state according
-         * the actual read stuff, e. g. if only head record existed, FULL. Throws
-        exception if EMPTY was requested. */
-        void load(keyType key, ups_txn_t *tr, RCState level);
+        /** Reads the chain content from DB to the requested level, clearing the contents
+         * first if needed. Sets state according the actual read stuff, e. g. if only
+         * head record existed, FULL. Throws exception if EMPTY was requested. */
+        void load(keyType key, ups_txn_t *tr, RCState level, bool clearFirst = false);
 
         /** Saves actual content into db, considering the old record keys in
          * oldKeys. The overlapping part with the content will be updated,
@@ -704,6 +705,11 @@ ups_status_t _ups_db_find(ups_db_t *db, ups_txn_t *txn, ups_key_t *key, ups_reco
                           countType bucketsIn, countType bucketsOut, countType bucketsUn,
                           indexType * const hashStartRecord, countType * const hashStartKey) noexcept;
 
+        /** Collects all valid keys from the specified hash table into the given array.
+         * The caller must guarantee that the array is large enough.
+        @param which FPN_*_BUCKETS. */
+        countType hashCollect(FieldPosNode which, keyType *array) const noexcept;
+
     protected:
         /** Calculates the total number of keys in a bucket array, together with
          * the fill space above the used buckets with prime count and the fixed fields.
@@ -739,11 +745,6 @@ ups_status_t _ups_db_find(ups_db_t *db, ups_txn_t *txn, ups_key_t *key, ups_reco
 
         /** Initializes all hash tables with all HASH_FREE values. */
         void hashInit() noexcept;
-
-        /** Collects all valid keys from the specified hash table into the given array.
-         * The caller must guarantee that the array is large enogh. remaining has
-        to be set to the actual bucket count. */
-        countType hashCollect(FieldPosNode which, keyType * array, countType remaining) const noexcept;
 
         /** Does the actual insert without incrementing used counter. The deleted
          * may be decremented if overwrites a deleted entry.

@@ -2,6 +2,15 @@
 COPYRIGHT COMES HERE
 */
 
+/*
+TODO:
+attach
+~Transaction vs exception
+hash and pred in checkResults
+check payload management
+test edge update, edge creation checks
+*/
+
 #include<csignal>
 #include<cstring>
 #include<iostream>
@@ -351,7 +360,7 @@ void checkEnds(CheckEndsFunc *func, const char * const expectedMessage) {
 }
 
 void checkEnds() {
-	checkEnds(checkEndsNodeInsteadofEdge, "setEnds, setStartRootEnd or setEndRootStart may only be called on Edge");
+	checkEnds(checkEndsNodeInsteadofEdge, "This method may only be called on an Edge.");
 	checkEnds(checkEndsSet, "Ends are already set");
 	checkEnds(checkEndsNotNode1, "End must be node");
 	checkEnds(checkEndsNotNode2, "End must be node");
@@ -359,7 +368,6 @@ void checkEnds() {
 	checkEnds(checkEndsNotSet, "Edge ends not set");
 }
 
-// TODO check payload management
 
 int main(int argc, char** argv) {
 #if USE_NVWA == 1
@@ -377,6 +385,5 @@ int main(int argc, char** argv) {
 	hashTableInserts();
 	checkEnds();
 	// cout << "After hash insert - insert: " << UpsCounter::getInsert() << "  erase: " << UpsCounter::getErase() << "  find: " << UpsCounter::getFind() << endl;
-// TODO test edge update, edge creation checks
     return 0;
 }
