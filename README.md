@@ -7,6 +7,8 @@
 * Record chain loading and saving together with node's edge lists
 * UpscaleDB record management
 * Node and edge insert and update
+* Getting and setting nodes of an edge
+* Getting and filtering edges of a node
 
 The file src/todo.txt contains planned modifications.
 
