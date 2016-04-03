@@ -644,7 +644,9 @@ namespace udbgraph {
         is invalid or the ends are already set, or they are the same,
         the method throws exception.
         This method would belong to edge but it is here to save the application
-        from nasty casts. This method throws exception if not called on Edge. */
+        from nasty casts. This method throws exception if not called on Edge. 
+		The ends are marked only in the edge now. Writing it to disc will register
+		it to the edges. */
         void setEnds(std::shared_ptr<GraphElem> &start, std::shared_ptr<GraphElem> &end);
 
         /** Registers the start endpoint and root as end for the brand new edge.
@@ -652,7 +654,9 @@ namespace udbgraph {
          * and end order does not matter. If the argument is edge, its key
         is invalid or the ends are already set, the method throws exception.
         This method would belong to edge but it is here to save the application
-        from nasty casts. This method throws exception if not called on Edge. */
+        from nasty casts. This method throws exception if not called on Edge.
+		The ends are marked only in the edge now. Writing it to disc will register
+		it to the edges. */
         void setStartRootEnd(std::shared_ptr<GraphElem> &start);
 
         /** Registers the end endpoint and root as start for the brand new edge.
@@ -660,7 +664,9 @@ namespace udbgraph {
          * and end order does not matter. If the argument is edge, its key
         is invalid or the ends are already set, the method throws exception.
         This method would belong to edge but it is here to save the application
-        from nasty casts. This method throws exception if not called on Edge. */
+        from nasty casts. This method throws exception if not called on Edge. 
+		The ends are marked only in the edge now. Writing it to disc will register
+		it to the edges. */
         void setEndRootStart(std::shared_ptr<GraphElem> &end);
 
         /** Collects all edges into res with given direction and matching fltEdge.

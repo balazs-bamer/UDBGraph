@@ -124,14 +124,14 @@ The *Converter* class can serialize and deserialize native types only bytewise o
 
 Record types used in UDBGraph are:
 
-Type		 |Description
-:------------|:----------------------
-root		 |The singleton root node.
-ACL			 |Access control list information, not implemented yet.
-Node		 |Graph node with any payload.
-Directed edge|A directed edge with any payload.
-Undir. edge  |An undirected edge with any payload.
-Continuation |Continuation in the record chain.
+Type		 	|Description
+:---------------|:----------------------
+root		 	|The singleton root node.
+ACL			 	|Access control list information, not implemented yet.
+Node		 	|Graph node with any payload.
+Directed edge	|A directed edge with any payload.
+Undirected edge |An undirected edge with any payload.
+Continuation 	|Continuation in the record chain.
 
 UpscaleDB records have 64-bit unsigned keys, incremented as new records are inserted. The initial value is determined during database open, so counting continues where it was last time suspended. The extreme bit width assures no overlap in general use.
 
@@ -156,11 +156,18 @@ Managing these sets must be efficient for just a few edges as well as for thousa
 
 The hash algorithm skeleton is implemented in _openaddressing.cpp_.
 
+
+#### Payload filtering
+
+Edges of a node and neighbouring nodes of a node can be retrieved by one operation. This can involve an arbitrary user-defined filtering on the payload by subclassing the *Filter* class. The predefined *PayloadTypeFilter* class is useful for filtering only the payload types. It also incorporates a chache for payload types to ease usage.
+
+
 ### Operations and inner status management
 
 All user actions ar designed such that first the library makes sure that every involved graph element is accessible (not locked by other transactions and the user has appropriate permissions). If this check succeeds, only then starts the phase changing inner status of the library and the graph element instances. In this phase only UpscaleDB exceptions may signal fatal errors.
 
 All graph element instances maintain two record chains. One of them holds the original record contents before the transaction, the other the result of modification(s) during the transactions. For better performance, it is possible to read and write these partially, so leaving edge arrays and / or payload off when only the beginning is interesting.
+
 
 ### Classes
 
