@@ -2,19 +2,22 @@
 COPYRIGHT COMES HERE
 */
 
+// Functions with name test* are called from main. All other functions are called from these with name test*. */
+
 /*
 TODO:
-attach
 ~Transaction vs exception
 hash and pred in checkResults
 check payload management
-test edge update, edge creation checks
+test edge update
 */
 
+#include<string>
 #include<csignal>
 #include<cstring>
 #include<iostream>
 #include"udbgraph.h"
+#include"debug-util.h"
 
 #if USE_NVWA == 1
 #include"debug_new.h"
@@ -22,6 +25,8 @@ test edge update, edge creation checks
 
 using namespace udbgraph;
 using namespace std;
+
+const char mainFileName[] = "debug2a.udbg";
 
 /** SIGSEGV handler, throws a DebugException. */
 extern void handleSigsegv(int sig) {
@@ -32,136 +37,70 @@ void UPS_CALLCONV udbgraphErrorHandler(int level, const char *message) {
     cerr << "udbgraphErrorHandler: " << level << ": " << message << endl;
 }
 
-void notReady() {
+void testNotReady() {
 	try {
 		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
                 shared_ptr<GraphElem> node = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
 		db->write(node);
 	}
-	catch(exception &e) {
-		const char * const what = e.what();
-		if(strstr(what, "Record size was not set") == nullptr) {
-			cout << "notReady: " << e.what() << endl;
-		}
+    catch(exception &e) {
+        checkException(e, "testNotReady", "Record size was not set");
 	}
 }
 
-void singleInsertCreate() {
+void testSingleInsertCreate() {
 	try {
 		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
-		db->create("debug2a.udbg", 0644);
+		db->create(mainFileName, 0644);
 		shared_ptr<GraphElem> node = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
 		db->write(node);
 		db->close();
 	}
 	catch(exception &e) {
-		cout << "singleInsertCreate: " << e.what() << endl;
+		cout << "testSingleInsertCreate: " << e.what() << endl;
 	}
 }
 
-void singleInsertOpen() {
+void testSingleInsertOpen() {
 	try {
 		shared_ptr<Database> db = Database::newInstance(1, 2, "debug2");
-		db->open("debug2a.udbg");
+		db->open(mainFileName);
 		shared_ptr<GraphElem> node = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
 		db->write(node);
 	}
 	catch(exception &e) {
-		cout << "singleInsertOpen: " << e.what() << endl;
+		cout << "testSingleInsertOpen: " << e.what() << endl;
 	}
 }
 
-void verMismatch() {
+void testVerMismatch() {
 	try {
 		shared_ptr<Database> db = Database::newInstance(2, 1, "debug2");
-		db->open("debug2a.udbg");
+		db->open(mainFileName);
 	}
 	catch(exception &e) {
-		const char * const what = e.what();
-		if(strstr(what, "Invalid version or application name") == nullptr) {
-			cout << "verMismatch: " << e.what() << endl;
-		}
+        checkException(e, "testVerMismatch", "Invalid version or application name");
 	}
 }
 
-void nameMismatch() {
+void testNameMismatch() {
 	try {
 		shared_ptr<Database> db = Database::newInstance(1, 1, "debug3");
-		db->open("debug2a.udbg");
+		db->open(mainFileName);
 	}
 	catch(exception &e) {
-		const char * const what = e.what();
-		if(strstr(what, "Invalid version or application name") == nullptr) {
-			cout << "nameMismatch: " << e.what() << endl;
-		}
+        checkException(e, "testNameMismatch", "Invalid version or application name");
 	}
 }
 
-class MoreWritesPerTrans : public Payload {
-protected:
-	static payloadType _staticType;
-
-	char * content = nullptr;
-
-	int maxLen = 0;
-
-public:
-    /** Sets type for instance. */
-    MoreWritesPerTrans(payloadType pt) : Payload(pt) {}
-    
-	~MoreWritesPerTrans() {
-		delete[] content;
-	}
-
-	/** Static PayloadType ID for GEFactory. */
-	static payloadType id() { return _staticType; }
-
-	/** Sets the static PayloadType ID for GEFactory. */
-	static void setID(payloadType pt) { _staticType = pt; }
-
-	/** Used in GEFactory to create a shared_ptr holding a new class instance. */
-	static shared_ptr<GraphElem> create(shared_ptr<Database> &db, payloadType pt) {
-		return shared_ptr<GraphElem>(new Node(db, std::unique_ptr<Payload>(new MoreWritesPerTrans(pt))));
-	}
-
-	void fill(size_t len) {
-		if(len > 9999) {
-			len = 9999;
-		}
-		if(maxLen < len) {
-			delete[] content;
-			maxLen = len;
-			content = new char[maxLen + 1];
-		}
-		int div10[] = {1000, 100, 10, 1};
-        char remain[] = "xxxx abcd\n";
-        int i;
-        for(i = 0; i < len; i++) {
-            int i10 = i % 10;
-            if(i10 < 4) {
-                content[i] = '0' + ((i - i10) / div10[i10]) % 10;
-            }
-            else {
-                content[i] = remain[i10];
-            }
-        }
-        content[i] = 0;
-	}
-
-	virtual void serialize(Converter &conv) { conv << content; }
-};
-	
-payloadType MoreWritesPerTrans::_staticType;
-
-void moreWritesPerTrans() {
-	MoreWritesPerTrans::setID(GEFactory::reg(MoreWritesPerTrans::create));
+void testMoreWritesPerTrans() {
 	try {
 		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
-		db->open("debug2a.udbg");
+		db->open(mainFileName);
 		{
 			Transaction tr = db->beginTrans(false);
-			shared_ptr<GraphElem> node = GEFactory::create(db, MoreWritesPerTrans::id());
-			MoreWritesPerTrans& pl = dynamic_cast<MoreWritesPerTrans&>(node->pl());
+			shared_ptr<GraphElem> node = GEFactory::create(db, ClassicStringPayload::id());
+			ClassicStringPayload& pl = dynamic_cast<ClassicStringPayload&>(node->pl());
 			pl.fill(1100);
 			db->write(node, tr);
 			pl.fill(8000);
@@ -170,8 +109,8 @@ void moreWritesPerTrans() {
 		}
 		{
 			Transaction tr = db->beginTrans(false);
-			shared_ptr<GraphElem> node = GEFactory::create(db, MoreWritesPerTrans::id());
-			MoreWritesPerTrans& pl = dynamic_cast<MoreWritesPerTrans&>(node->pl());
+			shared_ptr<GraphElem> node = GEFactory::create(db, ClassicStringPayload::id());
+			ClassicStringPayload& pl = dynamic_cast<ClassicStringPayload&>(node->pl());
 			pl.fill(100);
 			db->write(node, tr);
 			pl.fill(8000);
@@ -182,8 +121,8 @@ void moreWritesPerTrans() {
 		}
 		{
 			Transaction tr = db->beginTrans(false);
-			shared_ptr<GraphElem> node = GEFactory::create(db, MoreWritesPerTrans::id());
-			MoreWritesPerTrans& pl = dynamic_cast<MoreWritesPerTrans&>(node->pl());
+			shared_ptr<GraphElem> node = GEFactory::create(db, ClassicStringPayload::id());
+			ClassicStringPayload& pl = dynamic_cast<ClassicStringPayload&>(node->pl());
 			pl.fill(100);
 			db->write(node, tr);
 			pl.fill(8000);
@@ -194,7 +133,7 @@ void moreWritesPerTrans() {
 		}
 	}
 	catch(exception &e) {
-		cout << "singleInsertOpen: " << e.what() << endl;
+		cout << "testMoreWritesPerTrans: " << e.what() << endl;
 	}
 }
 	
@@ -283,7 +222,7 @@ void hashTableInsertsIOU(shared_ptr<Database> &db, Transaction &tr, shared_ptr<G
 	hashTableInsertsUn(db, tr, node, n);
 }
 
-void hashTableInserts() {
+void testHashTableInserts() {
 	try {
 		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
 		db->create("debug2-hash-insert.udbg", 0644);
@@ -303,7 +242,7 @@ void hashTableInserts() {
 		db->close();
 	}
 	catch(exception &e) {
-		cout << "hashTableInserts: " << e.what() << endl;
+		cout << "testHashTableInserts: " << e.what() << endl;
 	}
 }
 
@@ -336,7 +275,7 @@ void checkEndsNotSet(shared_ptr<Database> &db, Transaction &tr, shared_ptr<Graph
 
 void checkEnds(CheckEndsFunc *func, const char * const expectedMessage) {
 	shared_ptr<Database> db = Database::newInstance(1, 2, "debug2");
-	db->open("debug2a.udbg");
+	db->open(mainFileName);
 	Transaction tr = db->beginTrans();
 	shared_ptr<GraphElem> node1 = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
 	db->write(node1);
@@ -350,16 +289,13 @@ void checkEnds(CheckEndsFunc *func, const char * const expectedMessage) {
 		cout << "checkEnds: expected exception haven\'t arrived:" << expectedMessage << endl;
 	}
 	catch(exception &e) {
-		const char * const what = e.what();
-		if(strstr(what, expectedMessage) == nullptr) {
-			cout << "checkEnds: " << e.what() << endl;
-		}
+        checkException(e, "checkEnds", expectedMessage);
 	}
 	tr.abort();
 	db->close();
 }
 
-void checkEnds() {
+void testCheckEnds() {
 	checkEnds(checkEndsNodeInsteadofEdge, "This method may only be called on an Edge.");
 	checkEnds(checkEndsSet, "Ends are already set");
 	checkEnds(checkEndsNotNode1, "End must be node");
@@ -368,6 +304,51 @@ void checkEnds() {
 	checkEnds(checkEndsNotSet, "Edge ends not set");
 }
 
+void testAttach() {
+	const char before[] = "First content before attach.";
+	const char after[] = "Second content after attach.";
+	try {
+		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
+		db->open(mainFileName);
+		{
+			Transaction tr = db->beginTrans(false);
+			shared_ptr<GraphElem> node = GEFactory::create(db, ClassicStringPayload::id());
+			ClassicStringPayload& pl = dynamic_cast<ClassicStringPayload&>(node->pl());
+			pl.set(before);
+			db->write(node, tr);
+			tr.commit();
+			tr = db->beginTrans(false);
+// overwrite the first one
+			node->attach(tr);
+			pl.set(after);
+			node->write(tr);
+			tr.commit();
+		}
+	}
+	catch(exception &e) {
+		cout << "testAttach: " << e.what() << endl;
+	}
+    StringInFile finder(mainFileName);
+	if(finder.find(before)) {
+		cout << "testAttach: content before attach should not be present." << endl;
+	}
+	if(!finder.find(after)) {
+		cout << "testAttach: content after attach should be present." << endl;
+	}
+    try {
+        shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
+        db->open(mainFileName);
+        {
+            Transaction tr = db->beginTrans(false);
+            shared_ptr<GraphElem> node = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
+            node->attach(tr);
+            tr.commit();
+        }
+    }
+    catch(exception &e) {
+        checkException(e, "testAttach", "Illegal state in Database::doAttach: DU");
+    }
+}
 
 int main(int argc, char** argv) {
 #if USE_NVWA == 1
@@ -375,15 +356,17 @@ int main(int argc, char** argv) {
 #endif
 	signal(SIGSEGV, handleSigsegv);
 	InitStatic globalStaticInitializer;
-	Database::setErrorHandler(udbgraphErrorHandler);
-	notReady();
-	singleInsertCreate();
-	singleInsertOpen();
-	verMismatch();
-	nameMismatch();
-	moreWritesPerTrans();
-	hashTableInserts();
-	checkEnds();
+    ClassicStringPayload::setID(GEFactory::reg(ClassicStringPayload::create));
+    Database::setErrorHandler(udbgraphErrorHandler);
+	testNotReady();
+	testSingleInsertCreate();
+	testSingleInsertOpen();
+	testVerMismatch();
+	testNameMismatch();
+	testMoreWritesPerTrans();
+	testHashTableInserts();
+	testCheckEnds();
+	testAttach();
 	// cout << "After hash insert - insert: " << UpsCounter::getInsert() << "  erase: " << UpsCounter::getErase() << "  find: " << UpsCounter::getFind() << endl;
     return 0;
 }

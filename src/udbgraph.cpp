@@ -223,6 +223,9 @@ void Database::isReady() {
 }
 
 void Database::doClose() {
+    if(upsTransactions.size() > 0) {
+        throw DebugException("Database::doClose: pending transactions found.");
+    }
     if(ready) {
         ready = false;
         uint32_t flags = 0;
@@ -260,7 +263,9 @@ Transaction Database::doBeginTrans(bool readonly, bool alreadyLocked) {
 }
 
 void Database::doEndTrans(Transaction &tr, TransactionEnd te) {
-    if(tr.over) {
+    // get around getHandle here to avoid processing Transaction instances that
+    // was moved to other ones
+    if(tr.over || tr.handle == TR_INV) {
         return;
     }
     tr.over = true;
@@ -697,12 +702,12 @@ Transaction::~Transaction() {
     }
 }
 
-inline Transaction::Transaction(Transaction &&t) noexcept : handle(t.handle),
+Transaction::Transaction(Transaction &&t) noexcept : handle(t.handle),
     db(std::move(t.db)), readonly(t.readonly), over(t.over) {
     t.handle = TR_INV;
 };
 
-inline Transaction& Transaction::operator=(Transaction &&t) noexcept {
+Transaction& Transaction::operator=(Transaction &&t) noexcept {
     handle = t.handle; db = std::move(t.db); readonly = t.readonly; over = t.over;
     // make the original instance unusable
     t.handle = TR_INV;

@@ -35,10 +35,14 @@ include_directories( ${include_dirs} )
 
 set(debug_hdrs
     "${DEBUG_BINARY_DIR}/debug_config.h"
+	"${CMAKE_CURRENT_LIST_DIR}/debug/debug-util.h"
 )
 
 set(debug1_srcs "${CMAKE_CURRENT_LIST_DIR}/debug/debug1.cpp")
-set(debug2_srcs "${CMAKE_CURRENT_LIST_DIR}/debug/debug2.cpp")
+set(debug2_srcs
+	"${CMAKE_CURRENT_LIST_DIR}/debug/debug2.cpp"
+	"${CMAKE_CURRENT_LIST_DIR}/debug/debug-util.cpp"
+)
 set(dumpdb_srcs "${CMAKE_CURRENT_LIST_DIR}/debug/dumpdb.cpp")
 
 if(USE_NVWA)

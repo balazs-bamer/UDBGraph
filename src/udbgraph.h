@@ -447,7 +447,8 @@ namespace udbgraph {
     public:
         /** The destructor calls abort to allow RAII cleanup after an exception.
         Important: if an explicite abort() or commit() was called before, the
-        destructor has no effect. */
+        destructor has no effect. This means each transaction should be explicitely
+        committed if meant so. */
         ~Transaction();
 
         Transaction(Transaction &&t) noexcept;
