@@ -31,3 +31,57 @@
    fun:start_thread
    fun:clone
 }
+{
+   UpscaleDB3
+   Memcheck:Param
+   write(buf)
+   obj:/lib/x86_64-linux-gnu/libc-2.19.so
+   fun:_ZN9upscaledbL8os_writeEiPKvm
+   fun:_ZN9upscaledb7Journal16append_changesetERSt6vectorIPNS_4Page13PersistedDataESaIS4_EEmm
+   fun:_ZN9upscaledb9Changeset5flushEm
+   fun:_ZN9upscaledb23LocalTransactionManager20flush_committed_txnsEPNS_7ContextE
+   fun:_ZN9upscaledb11Environment5closeEj
+   fun:ups_env_close
+   fun:_ZN8udbgraph8Database7doCloseEv
+   fun:_ZN8udbgraph8Database5closeEv
+   fun:_Z22testSingleInsertCreatev
+   fun:main
+}
+{
+   VG_REPLACE_MALLOC
+   Memcheck:Cond
+   fun:_Znam
+   fun:_ZN12StringInFile4findEPKci
+   fun:_Z10testAttachv
+   fun:main
+}
+{
+   FSTREAM1
+   Memcheck:Param
+   read(count)
+   obj:/lib/x86_64-linux-gnu/libc-2.19.so
+   fun:_ZNSt12__basic_fileIcE6xsgetnEPcl
+   fun:_ZNSt13basic_filebufIcSt11char_traitsIcEE6xsgetnEPcl
+   fun:_ZNSi4readEPcl
+   fun:_ZN12StringInFile4findEPKci
+   fun:_Z10testAttachv
+   fun:main
+}
+{
+   FSTREAM2
+   Memcheck:Cond
+   fun:_ZNSt13basic_filebufIcSt11char_traitsIcEE6xsgetnEPcl
+   fun:_ZNSi4readEPcl
+   fun:_ZN12StringInFile4findEPKci
+   fun:_Z10testAttachv
+   fun:main
+}
+{
+   FSTREAM3
+   Memcheck:Cond
+   fun:_ZNSi4readEPcl
+   fun:_ZN12StringInFile4findEPKci
+   fun:_Z10testAttachv
+   fun:main
+}
+

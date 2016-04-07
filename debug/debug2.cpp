@@ -6,8 +6,6 @@ COPYRIGHT COMES HERE
 
 /*
 TODO:
-~Transaction vs exception
-hash and pred in checkResults
 check payload management
 test edge update
 */
@@ -40,7 +38,7 @@ void UPS_CALLCONV udbgraphErrorHandler(int level, const char *message) {
 void testNotReady() {
 	try {
 		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
-                shared_ptr<GraphElem> node = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
+        shared_ptr<GraphElem> node = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
 		db->write(node);
 	}
     catch(exception &e) {
@@ -350,6 +348,106 @@ void testAttach() {
     }
 }
 
+void testGetEdges() {
+	try {
+		// first create the node and edges we need
+		shared_ptr<GraphElem> node, writeableEdge;
+		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
+		db->open(mainFileName);
+		try {
+			Transaction tr = db->beginTrans(false);
+			// create a node and keep it for later use
+			node = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
+			db->write(node, tr);
+			// create the later writeable empty edge
+			writeableEdge = GEFactory::create(db, PT_EMPTY_UEDGE);
+			writeableEdge->setStartRootEnd(node);
+			db->write(writeableEdge, tr);
+			// empty undir
+			shared_ptr<GraphElem> edge = GEFactory::create(db, PT_EMPTY_UEDGE);
+			edge->setStartRootEnd(node);
+			db->write(edge, tr);
+			// empty directed from root to node
+			edge = GEFactory::create(db, PT_EMPTY_DEDGE);
+			edge->setEndRootStart(node);
+			db->write(edge, tr);
+			// empty directed from node to root
+			edge = GEFactory::create(db, PT_EMPTY_DEDGE);
+			edge->setStartRootEnd(node);
+			db->write(edge, tr);
+			// int:1 directed from root to node
+			edge = GEFactory::create(db, IntPayload::id());
+            IntPayload& pl = dynamic_cast<IntPayload&>(edge->pl());
+            pl.set(1);
+			edge->setEndRootStart(node);
+			db->write(edge, tr);
+			// int:2 directed from root to node
+			edge = GEFactory::create(db, IntPayload::id());
+            pl = dynamic_cast<IntPayload&>(edge->pl());
+            pl.set(2);
+			edge->setEndRootStart(node);
+			db->write(edge, tr);
+			tr.commit();
+		}
+		catch(exception &e) {
+			cout << "testGetEdges 1: " << e.what() << endl;
+		}
+		// now test for expected behaviour
+		try {
+			int cnt;
+			Transaction trw = db->beginTrans(false);
+			writeableEdge->attach(trw);
+			Transaction trr = db->beginTrans(false);
+			node->attach(trr);
+			QueryResult result;
+			try {
+				node->getEdges(result, EdgeEndType::Un, Filter::get(), trr, false);
+			}
+			catch(exception &e) {
+        		checkException(e, "testGetEdges", "Attempting to involve an elem in a read-write transaction while already present in an other read-write one.");
+			}
+			result.clear();
+			node->getEdges(result, EdgeEndType::Un, Filter::get(), trr);
+			if((cnt = result.size()) != 1) {
+				cout << "testGetEdges: wrong number of undirected edges: " << cnt << endl;
+			}
+			result.clear();
+			node->getEdges(result, EdgeEndType::Any, Filter::get(), trr);
+			if((cnt = result.size()) != 5) {
+				cout << "testGetEdges: wrong number of any edges: " << cnt << endl;
+			}
+			result.clear();
+			node->getEdges(result, EdgeEndType::In, Filter::get(), trr);
+			if((cnt = result.size()) != 3) {
+				cout << "testGetEdges: wrong number of incoming edges: " << cnt << endl;
+			}
+			result.clear();
+			node->getEdges(result, EdgeEndType::Out, Filter::get(), trr);
+			if((cnt = result.size()) != 1) {
+				cout << "testGetEdges: wrong number of outgoing edges: " << cnt << endl;
+			}
+			result.clear();
+			node->getEdges(result, EdgeEndType::Any, PayloadTypeFilter::get(PT_EMPTY_DEDGE), trr);
+			if((cnt = result.size()) != 2) {
+				cout << "testGetEdges: wrong number of directed edges filtered by payload type: " << cnt << endl;
+			}
+			result.clear();
+			IntPayloadFilter ipf(1);
+			node->getEdges(result, EdgeEndType::In, ipf, trr);
+			if((cnt = result.size()) != 1) {
+				cout << "testGetEdges: wrong number of directed edges filtered by content: " << cnt << endl;
+			}
+		}
+		catch(bad_cast &e) { //exception &e) {
+			cout << "testGetEdges 2: " << e.what() << endl;
+		}
+
+	}
+	catch(bad_cast &e) { //exception &e) {
+		cout << "testGetEdges 3: " << e.what() << endl;
+	}
+}
+
 int main(int argc, char** argv) {
 #if USE_NVWA == 1
     nvwa::new_progname = argv[0];
@@ -357,6 +455,7 @@ int main(int argc, char** argv) {
 	signal(SIGSEGV, handleSigsegv);
 	InitStatic globalStaticInitializer;
     ClassicStringPayload::setID(GEFactory::reg(ClassicStringPayload::create));
+    IntPayload::setID(GEFactory::reg(IntPayload::create));
     Database::setErrorHandler(udbgraphErrorHandler);
 	testNotReady();
 	testSingleInsertCreate();
@@ -367,6 +466,7 @@ int main(int argc, char** argv) {
 	testHashTableInserts();
 	testCheckEnds();
 	testAttach();
+	testGetEdges();
 	// cout << "After hash insert - insert: " << UpsCounter::getInsert() << "  erase: " << UpsCounter::getErase() << "  find: " << UpsCounter::getFind() << endl;
     return 0;
 }

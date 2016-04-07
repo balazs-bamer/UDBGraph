@@ -510,6 +510,7 @@ namespace udbgraph {
      * implementation matches everything. */
     class Filter {
     private:
+
         static Filter defaultFilter;
 
     public:
@@ -518,7 +519,11 @@ namespace udbgraph {
 
         /** Returns true if this filter is suitable for filtering the given payload
          * and the filter contents match the payload contents. This base implementation
-        always returns true. */
+        always returns true. The implementations in subclasses will have to cast
+        pl to the intended payload type to be able to perform the filtering.
+        If the cast fails, std::bad_cast exception will be thrown.
+        If elems with different payload types are to be expected, this bad_cast
+        should be caught inside match and false returned. */
         virtual bool match(Payload &pl) noexcept { return true; }
 
         /** Returns the static member of the same type matching everyting. */
@@ -674,33 +679,38 @@ namespace udbgraph {
          * The function marks all returned items in the transaction.
          * If omitFailed is set, leaves out items causing permission or transaction
          * exception, otherwise throws exception and returns without changing anything.
-         * May not be called on edges. */
-        void getEdges(QueryResult &res, EdgeEndType direction, Filter &fltEdge, Transaction &tr, bool omitFailed = false);
+         * This exception is thrown even if the causing edge would not be included
+         * considering the given filter. May not be called on edges. */
+        void getEdges(QueryResult &res, EdgeEndType direction, Filter &fltEdge, Transaction &tr, bool omitFailed = true);
 
         /** Collects all edges into res with given direction and matching fltEdge.
          * The function uses a temporary transaction and the returned edges will
          * have state GEState::DK. If omitFailed is set, leaves out items causing
          * permission or transaction exception, otherwise throws exception and
-         * returns without changing anything. May not be called on edges. */
-        void getEdges(QueryResult &res, EdgeEndType direction, Filter &fltEdge, bool omitFailed = false);
+         * returns without changing anything. This exception is thrown even if the
+         * causing edge would not be included considering the given filter.
+         * May not be called on edges. */
+        void getEdges(QueryResult &res, EdgeEndType direction, Filter &fltEdge, bool omitFailed = true);
 
         /** Collects all neighbouring nodes matching fltNode into res
          * connected by edges of given direction and matching fltEdge.
          * Root node is never included. The function marks all returned nodes
          * and their edges in the transaction. If omitFailed is set, leaves out
          * items causing permission or transaction exception, otherwise throws
-         * exception and returns without changing anything.
-         * May not be called on edges. */
-        void getNeighbours(QueryResult &res, EdgeEndType direction, Filter &fltEdge, Filter &fltNode, Transaction &tr, bool omitFailed = false);
+         * exception and returns without changing anything. This exception is thrown
+         * even if the causing edge would not be included considering the given
+         * filter. May not be called on edges. */
+        void getNeighbours(QueryResult &res, EdgeEndType direction, Filter &fltEdge, Filter &fltNode, Transaction &tr, bool omitFailed = true);
 
         /** Collects all neighbouring nodes matching fltNode into res
          * connected by edges of given direction and matching fltEdge.
          * Root node is never included. The function uses a temporary transaction
          * and the returned nodes will have state GEState::DK. If omitFailed is set,
          * leaves out items causing permission or transaction exception, otherwise
-         * throws exception and returns without changing anything.
-         * May not be called on edges. */
-        void getNeighbours(QueryResult &res, EdgeEndType direction, Filter &fltEdge, Filter &fltNode, bool omitFailed = false);
+         * throws exception and returns without changing anything. This exception
+         * is thrown even if the causing edge would not be included considering
+         * the given filter. May not be called on edges. */
+        void getNeighbours(QueryResult &res, EdgeEndType direction, Filter &fltEdge, Filter &fltNode, bool omitFailed = true);
 
         /** Returns the start node if this is an edge. If not, throws exception.
          * For undirected edge, returns one of the nodes. The function marks the returned
@@ -871,7 +881,7 @@ protected:
     class DirEdge final : public Edge {
     public:
         /** Constructs a new instance via create. */
-        DirEdge(std::shared_ptr<Database> &d, RecordType rt, std::unique_ptr<Payload> pl) : Edge(d, rt, std::move(pl)) {}
+        DirEdge(std::shared_ptr<Database> &d, std::unique_ptr<Payload> pl) : Edge(d, RT_DEDGE, std::move(pl)) {}
 
     protected:
         /** Writes the fixed fields into chainNew. Here does nothing. */
@@ -887,7 +897,7 @@ protected:
     class UndirEdge final : public Edge {
     public:
         /** Constructs a new instance via create. */
-        UndirEdge(std::shared_ptr<Database> &d, RecordType rt, std::unique_ptr<Payload> pl) : Edge(d, rt, std::move(pl)) {}
+        UndirEdge(std::shared_ptr<Database> &d, std::unique_ptr<Payload> pl) : Edge(d, RT_UEDGE, std::move(pl)) {}
 
     protected:
         /** Writes the fixed fields into chainNew. Here does nothing. */
@@ -1004,7 +1014,7 @@ protected:
 
         /** Used in GEFactory to create a shared_ptr holding a new class instance. */
         static std::shared_ptr<GraphElem> create(std::shared_ptr<Database> &db, payloadType pt) {
-            return std::shared_ptr<GraphElem>(new Node(db, std::unique_ptr<Payload>(new EmptyNode(pt))));
+            return std::shared_ptr<GraphElem>(std::make_shared<Node>(db, std::unique_ptr<Payload>(new EmptyNode(pt))));
         }
     };
 
@@ -1019,7 +1029,7 @@ protected:
 
         /** Used in GEFactory to create a shared_ptr holding a new class instance. */
         static std::shared_ptr<GraphElem> create(std::shared_ptr<Database> &db, payloadType pt) {
-            return std::shared_ptr<GraphElem>(new DirEdge(db, RT_DEDGE, std::unique_ptr<Payload>(new EmptyDirEdge(pt))));
+            return std::shared_ptr<GraphElem>(std::make_shared<DirEdge>(db, std::unique_ptr<Payload>(new EmptyDirEdge(pt))));
         }
     };
 
@@ -1034,7 +1044,7 @@ protected:
 
         /** Used in GEFactory to create a shared_ptr holding a new class instance. */
         static std::shared_ptr<GraphElem> create(std::shared_ptr<Database> &db, payloadType pt) {
-            return std::shared_ptr<GraphElem>(new UndirEdge(db, RT_UEDGE, std::unique_ptr<Payload>(new EmptyUndirEdge(pt))));
+            return std::shared_ptr<GraphElem>(std::make_shared<UndirEdge>(db, std::unique_ptr<Payload>(new EmptyUndirEdge(pt))));
         }
     };
 

@@ -51,6 +51,53 @@ public:
 	void fill(size_t len);
 
 	virtual void serialize(udbgraph::Converter &conv) { conv << content; }
+
+	virtual void deserialize(udbgraph::Converter &conv) { delete[] content; conv >> content; }
+};
+
+/** By default looks for equality, but could be extended to use any relation and even change it during its existence. */
+class IntPayload : public udbgraph::Payload {
+protected:
+	static udbgraph::payloadType _staticType;
+
+	int content = 0;
+
+public:
+    /** Sets type for instance. */
+    IntPayload(udbgraph::payloadType pt) : Payload(pt) {}
+    
+	~IntPayload() {}
+
+	/** Static PayloadType ID for GEFactory. */
+	static udbgraph::payloadType id() { return _staticType; }
+
+	/** Sets the static PayloadType ID for GEFactory. */
+	static void setID(udbgraph::payloadType pt) { _staticType = pt; }
+
+	/** Used in GEFactory to create a shared_ptr holding a new class instance. */
+	static std::shared_ptr<udbgraph::GraphElem> create(std::shared_ptr<udbgraph::Database> &db, udbgraph::payloadType pt) {
+		return std::shared_ptr<udbgraph::GraphElem>(new udbgraph::DirEdge(db, std::unique_ptr<udbgraph::Payload>(new IntPayload(pt))));
+	}
+
+	void set(int i) { content = i; }
+
+	int get() { return content; }
+
+	virtual void serialize(udbgraph::Converter &conv) { conv << content; }
+
+	virtual void deserialize(udbgraph::Converter &conv) { conv >> content; }
+};
+
+class IntPayloadFilter : public udbgraph::Filter {
+protected:
+	/** The value to compare to. */
+	int value;
+
+public:
+	/** Stores the payload type, default is PT_ANY. */
+	IntPayloadFilter(int i) noexcept : value(i) {}
+
+	virtual bool match(udbgraph::Payload &pl) noexcept;
 };
 
 class StringInFile {

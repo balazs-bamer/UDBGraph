@@ -268,6 +268,7 @@ void Database::doEndTrans(Transaction &tr, TransactionEnd te) {
     if(tr.over || tr.handle == TR_INV) {
         return;
     }
+    // if the Transaction has been once aborted or committed, prohibit doing it again
     tr.over = true;
     transHandleType trHandle = tr.getHandle();
     auto foundUpsTrans = upsTransactions.find(trHandle);
@@ -397,6 +398,7 @@ shared_ptr<GraphElem> Database::doBareRead(keyType key, RCState level, ups_txn_t
     RecordType recType = static_cast<RecordType>(FixedFieldIO::getField(FP_RECORDTYPE, reinterpret_cast<uint8_t *>(upsRecord.data)));
     shared_ptr<GraphElem> ret;
     if(recType == RT_ROOT) {
+        // does not compile with make_shared for some reason
         shared_ptr<GraphElem> root(new Root(shared_from_this(), 0, 0, ""));
         ret = move(root);
     }
@@ -536,6 +538,7 @@ struct hash<shared_ptr<GraphElem>> {
     }
 };
 
+// TODO check if needed - it won't get called and operator= on shared_ptr seems to function
 /** Predicate function for shared pointers of GraphElems using their keys. */
 template <>
 struct equal_to<shared_ptr<GraphElem>> {
@@ -720,6 +723,8 @@ transHandleType Transaction::getHandle() const {
     }
     return handle;
 }
+
+Filter Filter::defaultFilter;
 
 map<payloadType, PayloadTypeFilter> PayloadTypeFilter::store;
 

@@ -405,20 +405,30 @@ void RecordChain::setHead(keyType key, const uint8_t * const rec) {
     RecordType rt = static_cast<RecordType>(*rec);
     if(rt == RT_NODE || rt == RT_ROOT) {
         setHashStart();
+        if(hashStartRecord[RCS_PAY] == 0) {
+            if(getHeadField(FP_NEXT) == KEY_INVALID) {
+                // no more records
+                state = RCState::FULL;
+            }
+            else {
+                // payload is missing
+                state = RCState::PARTIAL;
+            }
+        }
+        else {
+            // hash is not read
+            state = RCState::HEAD;
+        }
     }
-    if(hashStartRecord[RCS_PAY] == 0) {
+    else {
         if(getHeadField(FP_NEXT) == KEY_INVALID) {
             // no more records
             state = RCState::FULL;
         }
         else {
             // payload is missing
-            state = RCState::PARTIAL;
+            state = RCState::HEAD;
         }
-    }
-    else {
-        // hash is not read
-        state = RCState::HEAD;
     }
     reset();
 }

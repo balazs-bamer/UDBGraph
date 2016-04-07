@@ -54,7 +54,21 @@ void ClassicStringPayload::fill(size_t len) {
 	content[i] = 0;
 }
 
-StringInFile::StringInFile(const char * const fn, int bufLen) : ifs(fn, ios::binary) {
+payloadType IntPayload::_staticType;
+
+bool IntPayloadFilter::match(udbgraph::Payload &pl) noexcept {
+	// do not throw std::bad_cast on failure because that payload belongs
+	// to an other graph elem
+	try {
+		return dynamic_cast<IntPayload&>(pl).get() == value;
+	}
+	catch(bad_cast &e) {
+		return false;
+	}
+}
+
+
+StringInFile::StringInFile(const char * const fn, int bl) : ifs(fn, ios::binary), bufLen(bl) {
 	if(bufLen <= 0) {
 		throw IllegalQuantityException("StringInFile: Invalid buffer size.");
 	}
@@ -64,7 +78,6 @@ bool StringInFile::find(const char * const stuff, int len) {
 	if(len == 0) {
 		return true;
 	}
-	bool isStr = len < 0;
 	if(len < 0) {
 		len = strlen(stuff);
 	}
