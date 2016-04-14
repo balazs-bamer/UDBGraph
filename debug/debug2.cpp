@@ -6,7 +6,8 @@ COPYRIGHT COMES HERE
 
 /*
 TODO:
-check payload management
+test one GE with more RO transactions
+check payload management and AttachMode
 test edge update
 */
 
@@ -71,6 +72,19 @@ void testSingleInsertOpen() {
 	}
 }
 
+void testWriteReadonly() {
+	try {
+		shared_ptr<Database> db = Database::newInstance(1, 2, "debug2");
+		db->open(mainFileName);
+		Transaction tr = db->beginTrans(TT::RO);
+		shared_ptr<GraphElem> node = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
+		db->write(node, tr);
+	}
+	catch(exception &e) {
+        checkException(e, "testWriteReadonly", "Trying to write during a read-only transaction.");
+	}
+}
+
 void testVerMismatch() {
 	try {
 		shared_ptr<Database> db = Database::newInstance(2, 1, "debug2");
@@ -96,7 +110,7 @@ void testMoreWritesPerTrans() {
 		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
 		db->open(mainFileName);
 		{
-			Transaction tr = db->beginTrans(false);
+			Transaction tr = db->beginTrans(TT::RW);
 			shared_ptr<GraphElem> node = GEFactory::create(db, ClassicStringPayload::id());
 			ClassicStringPayload& pl = dynamic_cast<ClassicStringPayload&>(node->pl());
 			pl.fill(1100);
@@ -106,7 +120,7 @@ void testMoreWritesPerTrans() {
 			tr.commit();
 		}
 		{
-			Transaction tr = db->beginTrans(false);
+			Transaction tr = db->beginTrans(TT::RW);
 			shared_ptr<GraphElem> node = GEFactory::create(db, ClassicStringPayload::id());
 			ClassicStringPayload& pl = dynamic_cast<ClassicStringPayload&>(node->pl());
 			pl.fill(100);
@@ -118,7 +132,7 @@ void testMoreWritesPerTrans() {
 			tr.commit();
 		}
 		{
-			Transaction tr = db->beginTrans(false);
+			Transaction tr = db->beginTrans(TT::RW);
 			shared_ptr<GraphElem> node = GEFactory::create(db, ClassicStringPayload::id());
 			ClassicStringPayload& pl = dynamic_cast<ClassicStringPayload&>(node->pl());
 			pl.fill(100);
@@ -309,13 +323,13 @@ void testAttach() {
 		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
 		db->open(mainFileName);
 		{
-			Transaction tr = db->beginTrans(false);
+			Transaction tr = db->beginTrans(TT::RW);
 			shared_ptr<GraphElem> node = GEFactory::create(db, ClassicStringPayload::id());
 			ClassicStringPayload& pl = dynamic_cast<ClassicStringPayload&>(node->pl());
 			pl.set(before);
 			db->write(node, tr);
 			tr.commit();
-			tr = db->beginTrans(false);
+			tr = db->beginTrans(TT::RW);
 // overwrite the first one
 			node->attach(tr);
 			pl.set(after);
@@ -337,14 +351,14 @@ void testAttach() {
         shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
         db->open(mainFileName);
         {
-            Transaction tr = db->beginTrans(false);
+            Transaction tr = db->beginTrans(TT::RW);
             shared_ptr<GraphElem> node = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
             node->attach(tr);
             tr.commit();
         }
     }
     catch(exception &e) {
-        checkException(e, "testAttach", "Illegal state in Database::doAttach: DU");
+        checkException(e, "testAttach", "Trying to read an element for invalid key.");
     }
 }
 
@@ -353,9 +367,10 @@ void testGetEdges() {
 		// first create the node and edges we need
 		shared_ptr<GraphElem> node, writeableEdge;
 		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
-		db->open(mainFileName);
+		db->create(mainFileName, 0644);
+//		db->open(mainFileName);
 		try {
-			Transaction tr = db->beginTrans(false);
+			Transaction tr = db->beginTrans(TT::RW);
 			// create a node and keep it for later use
 			node = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
 			db->write(node, tr);
@@ -387,6 +402,13 @@ void testGetEdges() {
             pl.set(2);
 			edge->setEndRootStart(node);
 			db->write(edge, tr);
+			// now try to collect edges from root
+			QueryResult result;
+            db->getRootEdges(result, EdgeEndType::Any, Filter::allpass(), tr);
+			int cnt;
+            if((cnt = result.size()) != 6) {
+                cout << "testGetEdges: wrong number of any edges from root: " << cnt << endl;
+            }
 			tr.commit();
 		}
 		catch(exception &e) {
@@ -395,34 +417,34 @@ void testGetEdges() {
 		// now test for expected behaviour
 		try {
 			int cnt;
-			Transaction trw = db->beginTrans(false);
+			Transaction trw = db->beginTrans(TT::RW);
 			writeableEdge->attach(trw);
-			Transaction trr = db->beginTrans(false);
+			Transaction trr = db->beginTrans(TT::RO);
 			node->attach(trr);
 			QueryResult result;
 			try {
-				node->getEdges(result, EdgeEndType::Un, Filter::get(), trr, false);
+				node->getEdges(result, EdgeEndType::Un, Filter::allpass(), trr, false);
 			}
 			catch(exception &e) {
-        		checkException(e, "testGetEdges", "Attempting to involve an elem in a read-write transaction while already present in an other read-write one.");
+        		checkException(e, "testGetEdges", "Attempting a read-only transaction on an elem already present in a read-write one.");
 			}
 			result.clear();
-			node->getEdges(result, EdgeEndType::Un, Filter::get(), trr);
+			node->getEdges(result, EdgeEndType::Un, Filter::allpass(), trr);
 			if((cnt = result.size()) != 1) {
 				cout << "testGetEdges: wrong number of undirected edges: " << cnt << endl;
 			}
 			result.clear();
-			node->getEdges(result, EdgeEndType::Any, Filter::get(), trr);
+			node->getEdges(result, EdgeEndType::Any, Filter::allpass(), trr);
 			if((cnt = result.size()) != 5) {
 				cout << "testGetEdges: wrong number of any edges: " << cnt << endl;
 			}
 			result.clear();
-			node->getEdges(result, EdgeEndType::In, Filter::get(), trr);
+			node->getEdges(result, EdgeEndType::In, Filter::allpass(), trr);
 			if((cnt = result.size()) != 3) {
 				cout << "testGetEdges: wrong number of incoming edges: " << cnt << endl;
 			}
 			result.clear();
-			node->getEdges(result, EdgeEndType::Out, Filter::get(), trr);
+			node->getEdges(result, EdgeEndType::Out, Filter::allpass(), trr);
 			if((cnt = result.size()) != 1) {
 				cout << "testGetEdges: wrong number of outgoing edges: " << cnt << endl;
 			}
@@ -448,6 +470,50 @@ void testGetEdges() {
 	}
 }
 
+void testPayloadManagement() {
+	try {
+		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
+		db->open(mainFileName);
+		{
+			Transaction tr = db->beginTrans(TT::RW);
+			shared_ptr<GraphElem> node = GEFactory::create(db, ClassicStringPayload::id());
+			ClassicStringPayload& pl = dynamic_cast<ClassicStringPayload&>(node->pl());
+			pl.fill(1100);
+			db->write(node, tr);
+			pl.fill(8000);
+			node->write(tr);
+			tr.commit();
+		}
+		{
+			Transaction tr = db->beginTrans(TT::RW);
+			shared_ptr<GraphElem> node = GEFactory::create(db, ClassicStringPayload::id());
+			ClassicStringPayload& pl = dynamic_cast<ClassicStringPayload&>(node->pl());
+			pl.fill(100);
+			db->write(node, tr);
+			pl.fill(8000);
+			node->write(tr);
+			pl.fill(2000);
+			node->write(tr);
+			tr.commit();
+		}
+		{
+			Transaction tr = db->beginTrans(TT::RW);
+			shared_ptr<GraphElem> node = GEFactory::create(db, ClassicStringPayload::id());
+			ClassicStringPayload& pl = dynamic_cast<ClassicStringPayload&>(node->pl());
+			pl.fill(100);
+			db->write(node, tr);
+			pl.fill(8000);
+			node->write(tr);
+			pl.fill(200);
+			node->write(tr);
+			tr.commit();
+		}
+	}
+	catch(exception &e) {
+		cout << "testPayloadManagement: " << e.what() << endl;
+	}
+}
+	
 int main(int argc, char** argv) {
 #if USE_NVWA == 1
     nvwa::new_progname = argv[0];
@@ -460,6 +526,7 @@ int main(int argc, char** argv) {
 	testNotReady();
 	testSingleInsertCreate();
 	testSingleInsertOpen();
+	testWriteReadonly();
 	testVerMismatch();
 	testNameMismatch();
 	testMoreWritesPerTrans();
@@ -467,6 +534,7 @@ int main(int argc, char** argv) {
 	testCheckEnds();
 	testAttach();
 	testGetEdges();
+//	testPayloadManagement();
 	// cout << "After hash insert - insert: " << UpsCounter::getInsert() << "  erase: " << UpsCounter::getErase() << "  find: " << UpsCounter::getFind() << endl;
     return 0;
 }

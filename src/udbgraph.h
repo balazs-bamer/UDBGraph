@@ -34,8 +34,45 @@ namespace udbgraph {
 
     /** Only technical use between Database and GraphElem. */
     enum class TransactionEnd {
-        ABORT, COMMIT
+        /** Commit with keeping payloads as they are. */
+        COMMIT,
+
+        /** Abort with keeping payloads as they are. However, individual GraphElems
+         * may have been instructed to revert their payload to the content at transaction
+         * start. These will be reverted. */
+        ABORT_KEEP_PL, AB_KEEP_PL = TransactionEnd::ABORT_KEEP_PL,
+
+        /** Abort with reverting payloads to the content at transaction start. */
+        ABORT_REVERT_PL, AB_REVERT_PL=TransactionEnd::ABORT_REVERT_PL
     };
+
+    /** Alias for less typing. */
+    typedef TransactionEnd TE;
+
+    /** Type of transaction: read-only or read-write. */
+    enum class TransactionType {
+        /** Read-only transaction. */
+        RO,
+
+        /** Read-write tranaction. */
+        RW
+    };
+
+    /** Alias for less typing. */
+    typedef TransactionType TT;
+
+    /** Mode of attaching detached elems to an existing transaction. */
+    enum class AttachMode {
+        /** Keep the payload and write its contents to GraphElem::chain*.
+         * GraphElem::chain* are not read from disc. */
+        KEEP_PL,
+
+        /** Read the payload from disc and overwrite the current one. */
+        READ_PL
+    };
+
+    /** Alias for less typing. */
+    typedef AttachMode AM;
 
     /** Possible Graph Elem states describing chainOrig, chainNew and transaction states.
     These states are independent of the GraphElem payload changes. */
@@ -48,9 +85,10 @@ namespace udbgraph {
          * object with unknown key. Both chainOrig and chainNew are empty.*/
         DU,
 
-        /** An object after closing a transaction living in the disk DB at the end
-         * of transaction with known key. Note: an other transaction may delete it
-         * meanwhile. Both chainOrig and chainNew are empty.*/
+        /** An object after closing a read-write transaction or all referencing
+         * read-only ones. The object is in the disk DB and it has a known key.
+         * Note: an other transaction may delete it meanwhile. Both chainOrig
+         * and chainNew are empty.*/
         DK,
 
         /** An object once present in the disk DB but later deleted during the
@@ -244,7 +282,7 @@ namespace udbgraph {
         void flush();
 
         /** Begins a transaction, which may be read-only if needed. */
-        Transaction beginTrans(bool readonly = false);
+        Transaction beginTrans(TransactionType tt = TT::RW);
 
         /** Writes (inserts or updates) the element in the database using the specified
          * transaction. On update, the elem is overwritten in DB and the operation
@@ -266,19 +304,31 @@ namespace udbgraph {
 
         /** Attaches the given elem if it is detached, does nothing if its state
          * is NC or CC, throws exception otherwise. If it was detached, the elem
-        is re-read from disc. */
-        void attach(std::shared_ptr<GraphElem> ge, Transaction &tr);
+        is re-read from disc. am controls whether the payload is preserved or
+        read from disc, see AttachMode.*/
+        void attach(std::shared_ptr<GraphElem> ge, Transaction &tr, AttachMode am = AM::KEEP_PL);
 
-        /** See attach. */
-        void doAttach(std::shared_ptr<GraphElem> ge, Transaction &tr);
+        /** Collects all edges connecting the root into res with given direction and
+         * matching fltEdge. The function marks all returned items in the transaction.
+         * If omitFailed is set, leaves out items causing permission or transaction
+         * exception, otherwise throws exception and returns without changing anything.
+         * This exception is thrown even if the causing edge would not be included
+         * considering the given filter. May not be called on edges. */
+        void getRootEdges(QueryResult &res, EdgeEndType direction, Filter &fltEdge, Transaction &tr, bool omitFailed = false);
 
-        /* Returns the first user root. */
-        Node getRoot();
+        /** Collects all edges connecting the root into res with given direction and
+         * matching fltEdge. The function uses a temporary transaction and the returned
+         * edges will have state GEState::DK (if no more transactions reference them).
+         * If omitFailed is set, leaves out items causing permission or transaction
+         * problems, otherwise throws exception and returns without changing anything.
+         * This exception is thrown even if the causing edge would not be included
+         * considering the given filter. May not be called on edges. */
+        void getRootEdges(QueryResult &res, EdgeEndType direction, Filter &fltEdge, bool omitFailed = false);
 
-        /* Returns a list of user roots.
-        TODO should return iterator*/
-        //deque<Node> getRoots();
     protected:
+        /** See attach. */
+        void doAttach(std::shared_ptr<GraphElem> ge, Transaction &tr, AttachMode am);
+
         /** Throws exception if the object is not ready. */
         void isReady();
 
@@ -295,7 +345,7 @@ namespace udbgraph {
         /** See beginTrans.
         @param alreadyLocked if true, the returned object's destructor will function
         inside a locked Database method. */
-        Transaction doBeginTrans(bool readonly, bool alreadyLocked = false);
+        Transaction doBeginTrans(TransactionType tt, bool alreadyLocked = false);
 
         /** See endTrans. */
         void doEndTrans(Transaction &tr, TransactionEnd te);
@@ -310,7 +360,7 @@ namespace udbgraph {
 
         /** Checks if the GraphElem with the given key is member of an other
          * (so not the one owning th) transaction. More precisely, if
-        ro.readonly XOR containing.readonly is true, throws exception.
+        tr.readonly XOR containing.readonly is true, throws exception.
         Exception also comes when both are RW and the container is an other
         one. */
         void checkAlienBeforeWrite(keyType key, Transaction &tr) const;
@@ -430,7 +480,7 @@ namespace udbgraph {
         std::weak_ptr<Database> db;
 
         /** True if the transaction is read-only. */
-        bool readonly;
+        TransactionType type;
 
         /** True if the transaction has already been committed or aborted. */
         bool over = false;
@@ -442,7 +492,7 @@ namespace udbgraph {
         /** Creates the object, can be called only by Database::beginTrans.
         Calling from the application yields useless instance, since it won't
         be registered in Database. */
-        Transaction(std::shared_ptr<Database> d, bool ro) noexcept : handle(counter++), db(d), readonly(ro) {}
+        Transaction(std::shared_ptr<Database> d, TransactionType trType) noexcept : handle(counter++), db(d), type(trType) {}
 
     public:
         /** The destructor calls abort to allow RAII cleanup after an exception.
@@ -463,10 +513,10 @@ namespace udbgraph {
         transHandleType getHandle() const;
 
         /** Returns if the transaction is read-only. */
-        bool isReadonly() const noexcept { return readonly; }
+        bool isReadonly() const noexcept { return type == TT::RO; }
 
         /** Aborts the transaction. */
-        void abort() { db.lock()->endTrans(*this, TransactionEnd::ABORT); }
+        void abort(TE te = TE::AB_KEEP_PL);
 
         /** Commits the transaction. */
         void commit() { db.lock()->endTrans(*this, TransactionEnd::COMMIT); }
@@ -527,7 +577,7 @@ namespace udbgraph {
         virtual bool match(Payload &pl) noexcept { return true; }
 
         /** Returns the static member of the same type matching everyting. */
-        static Filter& get() { return defaultFilter; }
+        static Filter& allpass() { return defaultFilter; }
     };
 
     /** Filters only using the payload type. */
@@ -573,6 +623,10 @@ namespace udbgraph {
         /** Actual state of this instance. */
         GEState state = GEState::DU;
 
+        /** True if the payload should be reverted to its content at transaction
+         * start on transaction abort. False by default. */
+        bool willRevertOnAbort = false;
+
         /** Key for the first record of this elem. An elem gets a real key only when
         it is about to be written in DB. The GEFactory creation mechanism is too
         early in time for that. */
@@ -593,6 +647,9 @@ namespace udbgraph {
 
         /** Converter wrapping chainNew to hide it from payload. */
         Converter converter;
+
+        /** Local counter of uses in read-only transactions. */
+        countType roTransCounter = 0;
 
         /** Should not be instantiated. This constructor creates the two Serializer
         instances and passes the Database's inner UpscaleDB database pointer
@@ -624,7 +681,11 @@ namespace udbgraph {
         type identifiers. */
         RecordType getType() const noexcept { return recordType; }
 
+        /** Gets the ACL key. */
         keyType getACLkey() const noexcept { return aclKey; }
+
+        /** Sets the willRevertOnAbort flag. */
+        void revertOnAbort() { willRevertOnAbort = true; }
 
         /** Returns a reference to the payload. It is forbidden to define operator=
          * in a Payload subclass and overwrite the returned reference value!
@@ -642,7 +703,8 @@ namespace udbgraph {
 
         /** Convenience wrapper for elems registered in Database or with known key.
         See Database::attach. */
-        void attach(Transaction &tr) { auto ge = shared_from_this(); db.lock()->attach(ge, tr); }
+        void attach(Transaction &tr, AttachMode am = AttachMode::KEEP_PL)
+        { auto ge = shared_from_this(); db.lock()->attach(ge, tr, am); }
 
         /** Registers the two endpoints for the brand new edge if they are not
          * set yet. Arguments must represent nodes. For undirected edges, start
@@ -685,11 +747,11 @@ namespace udbgraph {
 
         /** Collects all edges into res with given direction and matching fltEdge.
          * The function uses a temporary transaction and the returned edges will
-         * have state GEState::DK. If omitFailed is set, leaves out items causing
-         * permission or transaction exception, otherwise throws exception and
-         * returns without changing anything. This exception is thrown even if the
-         * causing edge would not be included considering the given filter.
-         * May not be called on edges. */
+         * have state GEState::DK (if no more transactions reference them). If
+         * omitFailed is set, leaves out items causing permission or transaction
+         * exception, otherwise throws exception and returns without changing
+         * anything. This exception is thrown even if the causing edge would not
+         * be included considering the given filter. May not be called on edges. */
         void getEdges(QueryResult &res, EdgeEndType direction, Filter &fltEdge, bool omitFailed = true);
 
         /** Collects all neighbouring nodes matching fltNode into res
@@ -705,11 +767,11 @@ namespace udbgraph {
         /** Collects all neighbouring nodes matching fltNode into res
          * connected by edges of given direction and matching fltEdge.
          * Root node is never included. The function uses a temporary transaction
-         * and the returned nodes will have state GEState::DK. If omitFailed is set,
-         * leaves out items causing permission or transaction exception, otherwise
-         * throws exception and returns without changing anything. This exception
-         * is thrown even if the causing edge would not be included considering
-         * the given filter. May not be called on edges. */
+         * and the returned nodes will have state GEState::DK (if no more transactions
+         * reference them). If omitFailed is set, leaves out items causing permission
+         * or transaction problems, otherwise throws exception and returns without
+         * changing anything. This exception is thrown even if the causing edge
+         * would not be included considering the given filter. May not be called on edges. */
         void getNeighbours(QueryResult &res, EdgeEndType direction, Filter &fltEdge, Filter &fltNode, bool omitFailed = true);
 
         /** Returns the start node if this is an edge. If not, throws exception.
@@ -721,8 +783,9 @@ namespace udbgraph {
 
         /** Returns the start node if this is an edge. If not, throws exception.
          * For undirected edge, returns one of the nodes. The function uses a temporary
-         * transaction and the returned nodes will have state GEState::DK.
-        Root node may not be returned, an IllegalArgumentEception is thrown instead. */
+         * transaction and the returned nodes will have state GEState::DK
+         * (if no more transactions reference them). Root node may not be returned,
+         * an IllegalArgumentEception is thrown instead. */
         std::shared_ptr<GraphElem> getStart();
 
         /** Returns the end node if this is an edge. If not, throws exception.
@@ -734,12 +797,16 @@ namespace udbgraph {
 
         /** Returns the end node if this is an edge. If not, throws exception.
          * For undirected edge, returns one of the nodes. The function uses a temporary
-         * transaction and the returned nodes will have state GEState::DK.
-        Root node may not be returned, an IllegalArgumentEception is thrown instead. */
+         * transaction and the returned nodes will have state GEState::DK
+         * (if no more transactions reference them). Root node may not be returned,
+         * an IllegalArgumentEception is thrown instead. */
         std::shared_ptr<GraphElem> getEnd();
 
 protected:
-        /** Thorws exception if the elem is not a node. */
+        /** Increments roTransCounter. */
+        void incROCnt() noexcept { roTransCounter++; }
+
+        /** Throws exception if the elem is not a node. */
         void assureNode() const;
 
         /** Thorws exception if the elem is not a node. */
@@ -753,6 +820,9 @@ protected:
 
         /** Writes the fixed fields into chainNew. Here does nothing. */
         virtual void writeFixed();
+
+        /** Calls payload->deserialize() and copies chainNew into chainOrig. */
+        void payload2Chains();
 
         /** Performs complete deserializing, calls payload->deserialize(). */
         void deserialize();
@@ -794,7 +864,7 @@ protected:
         virtual void write(std::deque<std::shared_ptr<GraphElem>> &connected, ups_txn_t *tr);
 
         /** Sets the new state, updates payload, chainOrig and chainNew after
-        according to te's value (ABORT or COMMIT). */
+        according to te's value (ABORT* or COMMIT). */
         void endTrans(TransactionEnd te);
 
         /** Implementation of doGetStart and doGetEnd, returning a smart pointer

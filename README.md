@@ -9,6 +9,7 @@
 * Node and edge insert and update
 * Getting and setting nodes of an edge
 * Getting and filtering edges of a node
+* Attaching an existing graph elem to a transaction
 
 The file src/todo.txt contains planned modifications.
 
@@ -66,7 +67,7 @@ I did not want to include complex traversal algorithms and indexed search in the
 
 Practically all operations happen in a transaction. If none provided, one will be created just before the action and commited right after it.
 
-I have aimed serializable transaction isolation. Any number of transactions may run in parallel, each is either read-only or read-write. A graph elem may be present in any number of read-only tranactions, but only in one read-write one (wothout being involved in any read-only transaction). This model suits applications with many reads but a few writes, or writes occuring on different graph parts. Each UDBGraph tranaction is backed by exactly one UpscaleDB transaction.
+I have aimed serializable transaction isolation. Any number of transactions may run in parallel, each is either read-only or read-write. A graph elem may be present in any number of read-only tranactions, but only in one read-write one (without being involved in any read-only transaction). This model suits applications with many reads but a few writes, or writes occuring on different graph parts. Each UDBGraph tranaction is backed by exactly one UpscaleDB transaction.
 
 
 ### Architecture
@@ -160,6 +161,17 @@ The hash algorithm skeleton is implemented in _openaddressing.cpp_.
 #### Payload filtering
 
 Edges of a node and neighbouring nodes of a node can be retrieved by one operation. This can involve an arbitrary user-defined filtering on the payload by subclassing the *Filter* class. The predefined *PayloadTypeFilter* class is useful for filtering only the payload types. It also incorporates a chache for payload types to ease usage.
+
+
+#### Payloads in transactions
+
+It is possible to preserve a node or edge after a transaction together with its payload and attach it to an other transaction. During attach, there are two possibilities regarding the payload:
+* Preserve it. It may have important changes in the application. (default)
+* Read it from disc, because the disc contents ar einteresting now.
+
+A payload may be changed during the transaction by the application. For read-only transactions, this is not interesting. For read-write ones, a commit writes it to disc. An abort of read-write transactions has two possibilities:
+* Keep the payload as is (default).
+* Revert it to the value at the transaction beginning. This behavour can be set on individual elems or on the whole transaction.
 
 
 ### Operations and inner status management
