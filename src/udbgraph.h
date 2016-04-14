@@ -516,7 +516,7 @@ namespace udbgraph {
         bool isReadonly() const noexcept { return type == TT::RO; }
 
         /** Aborts the transaction. */
-        void abort(TE te = TE::AB_KEEP_PL);
+        void abort(TE te = TE::ABORT_KEEP_PL);
 
         /** Commits the transaction. */
         void commit() { db.lock()->endTrans(*this, TransactionEnd::COMMIT); }

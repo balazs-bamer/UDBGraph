@@ -46,6 +46,8 @@ public:
 		return std::shared_ptr<udbgraph::GraphElem>(new udbgraph::Node(db, std::unique_ptr<udbgraph::Payload>(new ClassicStringPayload(pt))));
 	}
 
+	char* get() { return content; }
+
 	void set(const char * const newContent); 
 
 	void fill(size_t len);

@@ -7,7 +7,6 @@ COPYRIGHT COMES HERE
 /*
 TODO:
 test one GE with more RO transactions
-check payload management and AttachMode
 test edge update
 */
 
@@ -470,44 +469,66 @@ void testGetEdges() {
 	}
 }
 
+void attachAbort(shared_ptr<Database> &db, AM attachMode, TE trEnd, const char * const expectedAtt, const char * const expectedAb) {
+	const char *amName, *teName;
+	if(attachMode == AM::KEEP_PL) {
+		amName = "AM::KEEP_PL";
+	}
+	else {
+		amName = "AM::READ_PL";
+	}
+	if(trEnd == TE::AB_KEEP_PL) {
+		teName = "TE::AB_KEEP_PL";
+	}
+	else {
+		teName = "TE::AB_REVET_PL";
+	}
+	Transaction tr = db->beginTrans(TT::RW);
+	shared_ptr<GraphElem> node = GEFactory::create(db, ClassicStringPayload::id());
+	ClassicStringPayload& pl = dynamic_cast<ClassicStringPayload&>(node->pl());
+	pl.set("1");
+	node->write(tr);
+	tr.commit();
+	pl.set("2");
+	tr = db->beginTrans(TT::RW);
+	node->attach(tr, attachMode);
+	if(strcmp(pl.get(), expectedAtt)) {
+		cout << "attachAbort(" << amName << ',' << teName << "): expected after attach: " << expectedAtt << " but got: " << pl.get() << endl;
+	}	
+	pl.set("3");
+	node->write(tr);
+	tr.abort(trEnd);
+	if(strcmp(pl.get(), expectedAb)) {
+		cout << "attachAbort(" << amName << ',' << teName << "): expected after abort: " << expectedAb << " but got: " << pl.get() << endl;
+	}	
+}
+
 void testPayloadManagement() {
 	try {
 		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
 		db->open(mainFileName);
-		{
-			Transaction tr = db->beginTrans(TT::RW);
-			shared_ptr<GraphElem> node = GEFactory::create(db, ClassicStringPayload::id());
-			ClassicStringPayload& pl = dynamic_cast<ClassicStringPayload&>(node->pl());
-			pl.fill(1100);
-			db->write(node, tr);
-			pl.fill(8000);
-			node->write(tr);
-			tr.commit();
-		}
-		{
-			Transaction tr = db->beginTrans(TT::RW);
-			shared_ptr<GraphElem> node = GEFactory::create(db, ClassicStringPayload::id());
-			ClassicStringPayload& pl = dynamic_cast<ClassicStringPayload&>(node->pl());
-			pl.fill(100);
-			db->write(node, tr);
-			pl.fill(8000);
-			node->write(tr);
-			pl.fill(2000);
-			node->write(tr);
-			tr.commit();
-		}
-		{
-			Transaction tr = db->beginTrans(TT::RW);
-			shared_ptr<GraphElem> node = GEFactory::create(db, ClassicStringPayload::id());
-			ClassicStringPayload& pl = dynamic_cast<ClassicStringPayload&>(node->pl());
-			pl.fill(100);
-			db->write(node, tr);
-			pl.fill(8000);
-			node->write(tr);
-			pl.fill(200);
-			node->write(tr);
-			tr.commit();
-		}
+		attachAbort(db, AM::KEEP_PL, TE::AB_KEEP_PL, "2", "3");
+		attachAbort(db, AM::KEEP_PL, TE::AB_REVERT_PL, "2", "2");
+		attachAbort(db, AM::READ_PL, TE::AB_KEEP_PL, "1", "3");
+		attachAbort(db, AM::READ_PL, TE::AB_REVERT_PL, "1", "1");
+		// now test per-GraphElem abort behaviour
+		Transaction tr = db->beginTrans(TT::RW);
+		shared_ptr<GraphElem> node = GEFactory::create(db, ClassicStringPayload::id());
+		ClassicStringPayload& pl = dynamic_cast<ClassicStringPayload&>(node->pl());
+		pl.set("1");
+		node->write(tr);
+		tr.commit();
+		pl.set("2");
+		tr = db->beginTrans(TT::RW);
+		node->attach(tr, AM::KEEP_PL);
+		node->revertOnAbort();
+		pl.set("3");
+		node->write(tr);
+		tr.abort(TE::AB_KEEP_PL);
+		// should be reverted
+		if(strcmp(pl.get(), "2")) {
+			cout << "testPayloadManagement (with attach AM::KEEP_PL and abort TE::AB_KEEP_PL but individual revert on node): expected after abort: 2 but got: " << pl.get() << endl;
+		}	
 	}
 	catch(exception &e) {
 		cout << "testPayloadManagement: " << e.what() << endl;
@@ -534,7 +555,7 @@ int main(int argc, char** argv) {
 	testCheckEnds();
 	testAttach();
 	testGetEdges();
-//	testPayloadManagement();
+	testPayloadManagement();
 	// cout << "After hash insert - insert: " << UpsCounter::getInsert() << "  erase: " << UpsCounter::getErase() << "  find: " << UpsCounter::getFind() << endl;
     return 0;
 }
