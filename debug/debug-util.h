@@ -29,7 +29,7 @@ protected:
 
 public:
     /** Sets type for instance. */
-    ClassicStringPayload(udbgraph::payloadType pt) : Payload(pt) {}
+    ClassicStringPayload(udbgraph::payloadType pt) : Payload(pt), content(new char[0]) {}
     
 	~ClassicStringPayload() {
 		delete[] content;

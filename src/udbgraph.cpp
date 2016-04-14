@@ -1039,7 +1039,7 @@ void GraphElem::endTrans(TransactionEnd te) {
         state = GEState::INV;
         break;
     default:
-        throw DebugException(string("endTrans commit: illegal state") + toString(state));
+        throw DebugException(string("endTrans commit: illegal state: ") + toString(state));
         break;
     }
 }

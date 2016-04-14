@@ -2,11 +2,11 @@
 COPYRIGHT COMES HERE
 */
 
-// Functions with name test* are called from main. All other functions are called from these with name test*. */
+// Functions with name test* are called from main. All other functions are called from these with name test*.
+// These tests create orphaned nodes in the database. 
 
 /*
 TODO:
-test one GE with more RO transactions
 test edge update
 */
 
@@ -534,6 +534,50 @@ void testPayloadManagement() {
 		cout << "testPayloadManagement: " << e.what() << endl;
 	}
 }
+
+void testMoreReadonly() {
+	try {
+		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
+        db->open(mainFileName);
+		Transaction tr = db->beginTrans(TT::RW);
+		shared_ptr<GraphElem> node = GEFactory::create(db, ClassicStringPayload::id());
+		db->write(node, tr);
+		tr.commit();
+		if(node->getState() != GEState::DK) {
+			cout << "testMoreReadonly 1: expected: DK, got: " << toString(node->getState()) << endl;
+		} 
+		tr = db->beginTrans(TT::RO);
+		node->attach(tr);
+		if(node->getState() != GEState::CC) {
+			cout << "testMoreReadonly 2: expected: CC, got: " << toString(node->getState()) << endl;
+		} 
+		Transaction tr2 = db->beginTrans(TT::RO);
+		node->attach(tr2);
+		if(node->getState() != GEState::CC) {
+			cout << "testMoreReadonly 3: expected: CC, got: " << toString(node->getState()) << endl;
+		} 
+		Transaction tr3 = db->beginTrans(TT::RO);
+		node->attach(tr3);
+		if(node->getState() != GEState::CC) {
+			cout << "testMoreReadonly 4: expected: CC, got: " << toString(node->getState()) << endl;
+		} 
+		tr2.commit();
+		if(node->getState() != GEState::CC) {
+			cout << "testMoreReadonly 5: expected: CC, got: " << toString(node->getState()) << endl;
+		} 
+		tr.commit();
+		if(node->getState() != GEState::CC) {
+			cout << "testMoreReadonly 6: expected: CC, got: " << toString(node->getState()) << endl;
+		} 
+		tr3.commit();
+		if(node->getState() != GEState::DK) {
+			cout << "testMoreReadonly 7: expected: DK, got: " << toString(node->getState()) << endl;
+		} 
+	}
+	catch(exception &e) {
+		cout << "testMoreReadonly: " << e.what() << endl;
+	}
+}
 	
 int main(int argc, char** argv) {
 #if USE_NVWA == 1
@@ -556,6 +600,7 @@ int main(int argc, char** argv) {
 	testAttach();
 	testGetEdges();
 	testPayloadManagement();
+	testMoreReadonly();
 	// cout << "After hash insert - insert: " << UpsCounter::getInsert() << "  erase: " << UpsCounter::getErase() << "  find: " << UpsCounter::getFind() << endl;
     return 0;
 }
