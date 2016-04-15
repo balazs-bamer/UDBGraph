@@ -29,7 +29,7 @@ protected:
 
 public:
     /** Sets type for instance. */
-    ClassicStringPayload(udbgraph::payloadType pt) : Payload(pt), content(new char[0]) {}
+    ClassicStringPayload(udbgraph::payloadType pt) : Payload(pt), content(new char[1]) { *content = 0; }
     
 	~ClassicStringPayload() {
 		delete[] content;
@@ -46,13 +46,13 @@ public:
 		return std::shared_ptr<udbgraph::GraphElem>(new udbgraph::Node(db, std::unique_ptr<udbgraph::Payload>(new ClassicStringPayload(pt))));
 	}
 
-	char* get() { return content; }
+	char* get() const { return content; }
 
 	void set(const char * const newContent); 
 
 	void fill(size_t len);
 
-	virtual void serialize(udbgraph::Converter &conv) { conv << content; }
+	virtual void serialize(udbgraph::Converter &conv) const { conv << content; }
 
 	virtual void deserialize(udbgraph::Converter &conv) { delete[] content; conv >> content; }
 };
@@ -83,9 +83,9 @@ public:
 
 	void set(int i) { content = i; }
 
-	int get() { return content; }
+	int get() const { return content; }
 
-	virtual void serialize(udbgraph::Converter &conv) { conv << content; }
+	virtual void serialize(udbgraph::Converter &conv) const { conv << content; }
 
 	virtual void deserialize(udbgraph::Converter &conv) { conv >> content; }
 };
@@ -98,8 +98,10 @@ protected:
 public:
 	/** Stores the payload type, default is PT_ANY. */
 	IntPayloadFilter(int i) noexcept : value(i) {}
+	
+	void set(int i) { value = i; }
 
-	virtual bool match(udbgraph::Payload &pl) noexcept;
+	virtual bool match(const udbgraph::Payload * const pl) const noexcept;
 };
 
 class StringInFile {

@@ -7,7 +7,6 @@ COPYRIGHT COMES HERE
 
 /*
 TODO:
-test edge update
 */
 
 #include<string>
@@ -40,6 +39,8 @@ void testNotReady() {
 		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
         shared_ptr<GraphElem> node = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
 		db->write(node);
+		// this should not be reached.
+		cout << "testNotReady: expected exception haven\'t arrived:" << endl;
 	}
     catch(exception &e) {
         checkException(e, "testNotReady", "Record size was not set");
@@ -78,6 +79,8 @@ void testWriteReadonly() {
 		Transaction tr = db->beginTrans(TT::RO);
 		shared_ptr<GraphElem> node = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
 		db->write(node, tr);
+		// this should not be reached.
+		cout << "testWriteReadonly: expected exception haven\'t arrived:" << endl;
 	}
 	catch(exception &e) {
         checkException(e, "testWriteReadonly", "Trying to write during a read-only transaction.");
@@ -88,6 +91,8 @@ void testVerMismatch() {
 	try {
 		shared_ptr<Database> db = Database::newInstance(2, 1, "debug2");
 		db->open(mainFileName);
+		// this should not be reached.
+		cout << "testVerMismatch: expected exception haven\'t arrived:" << endl;
 	}
 	catch(exception &e) {
         checkException(e, "testVerMismatch", "Invalid version or application name");
@@ -98,6 +103,8 @@ void testNameMismatch() {
 	try {
 		shared_ptr<Database> db = Database::newInstance(1, 1, "debug3");
 		db->open(mainFileName);
+		// this should not be reached.
+		cout << "testNameMismatch: expected exception haven\'t arrived:" << endl;
 	}
 	catch(exception &e) {
         checkException(e, "testNameMismatch", "Invalid version or application name");
@@ -111,34 +118,34 @@ void testMoreWritesPerTrans() {
 		{
 			Transaction tr = db->beginTrans(TT::RW);
 			shared_ptr<GraphElem> node = GEFactory::create(db, ClassicStringPayload::id());
-			ClassicStringPayload& pl = dynamic_cast<ClassicStringPayload&>(node->pl());
-			pl.fill(1100);
+			ClassicStringPayload *pl = dynamic_cast<ClassicStringPayload*>(node->pl());
+			pl->fill(1100);
 			db->write(node, tr);
-			pl.fill(8000);
+			pl->fill(8000);
 			node->write(tr);
 			tr.commit();
 		}
 		{
 			Transaction tr = db->beginTrans(TT::RW);
 			shared_ptr<GraphElem> node = GEFactory::create(db, ClassicStringPayload::id());
-			ClassicStringPayload& pl = dynamic_cast<ClassicStringPayload&>(node->pl());
-			pl.fill(100);
+			ClassicStringPayload *pl = dynamic_cast<ClassicStringPayload*>(node->pl());
+			pl->fill(100);
 			db->write(node, tr);
-			pl.fill(8000);
+			pl->fill(8000);
 			node->write(tr);
-			pl.fill(2000);
+			pl->fill(2000);
 			node->write(tr);
 			tr.commit();
 		}
 		{
 			Transaction tr = db->beginTrans(TT::RW);
 			shared_ptr<GraphElem> node = GEFactory::create(db, ClassicStringPayload::id());
-			ClassicStringPayload& pl = dynamic_cast<ClassicStringPayload&>(node->pl());
-			pl.fill(100);
+			ClassicStringPayload *pl = dynamic_cast<ClassicStringPayload*>(node->pl());
+			pl->fill(100);
 			db->write(node, tr);
-			pl.fill(8000);
+			pl->fill(8000);
 			node->write(tr);
-			pl.fill(200);
+			pl->fill(200);
 			node->write(tr);
 			tr.commit();
 		}
@@ -324,14 +331,14 @@ void testAttach() {
 		{
 			Transaction tr = db->beginTrans(TT::RW);
 			shared_ptr<GraphElem> node = GEFactory::create(db, ClassicStringPayload::id());
-			ClassicStringPayload& pl = dynamic_cast<ClassicStringPayload&>(node->pl());
-			pl.set(before);
+			ClassicStringPayload *pl = dynamic_cast<ClassicStringPayload*>(node->pl());
+			pl->set(before);
 			db->write(node, tr);
 			tr.commit();
 			tr = db->beginTrans(TT::RW);
 // overwrite the first one
 			node->attach(tr);
-			pl.set(after);
+			pl->set(after);
 			node->write(tr);
 			tr.commit();
 		}
@@ -355,6 +362,8 @@ void testAttach() {
             node->attach(tr);
             tr.commit();
         }
+		// this should not be reached.
+		cout << "testAttach: expected exception haven\'t arrived:" << endl;
     }
     catch(exception &e) {
         checkException(e, "testAttach", "Trying to read an element for invalid key.");
@@ -366,8 +375,7 @@ void testGetEdges() {
 		// first create the node and edges we need
 		shared_ptr<GraphElem> node, writeableEdge;
 		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
-		db->create(mainFileName, 0644);
-//		db->open(mainFileName);
+		db->open(mainFileName);
 		try {
 			Transaction tr = db->beginTrans(TT::RW);
 			// create a node and keep it for later use
@@ -391,14 +399,14 @@ void testGetEdges() {
 			db->write(edge, tr);
 			// int:1 directed from root to node
 			edge = GEFactory::create(db, IntPayload::id());
-            IntPayload& pl = dynamic_cast<IntPayload&>(edge->pl());
-            pl.set(1);
+            IntPayload *pl = dynamic_cast<IntPayload*>(edge->pl());
+            pl->set(1);
 			edge->setEndRootStart(node);
 			db->write(edge, tr);
 			// int:2 directed from root to node
 			edge = GEFactory::create(db, IntPayload::id());
-            pl = dynamic_cast<IntPayload&>(edge->pl());
-            pl.set(2);
+            pl = dynamic_cast<IntPayload*>(edge->pl());
+            pl->set(2);
 			edge->setEndRootStart(node);
 			db->write(edge, tr);
 			// now try to collect edges from root
@@ -423,6 +431,8 @@ void testGetEdges() {
 			QueryResult result;
 			try {
 				node->getEdges(result, EdgeEndType::Un, Filter::allpass(), trr, false);
+				// this should not be reached.
+				cout << "testGetEdges: expected exception haven\'t arrived:" << endl;
 			}
 			catch(exception &e) {
         		checkException(e, "testGetEdges", "Attempting a read-only transaction on an elem already present in a read-write one.");
@@ -485,21 +495,21 @@ void attachAbort(shared_ptr<Database> &db, AM attachMode, TE trEnd, const char *
 	}
 	Transaction tr = db->beginTrans(TT::RW);
 	shared_ptr<GraphElem> node = GEFactory::create(db, ClassicStringPayload::id());
-	ClassicStringPayload& pl = dynamic_cast<ClassicStringPayload&>(node->pl());
-	pl.set("1");
+	ClassicStringPayload *pl = dynamic_cast<ClassicStringPayload*>(node->pl());
+	pl->set("1");
 	node->write(tr);
 	tr.commit();
-	pl.set("2");
+	pl->set("2");
 	tr = db->beginTrans(TT::RW);
 	node->attach(tr, attachMode);
-	if(strcmp(pl.get(), expectedAtt)) {
-		cout << "attachAbort(" << amName << ',' << teName << "): expected after attach: " << expectedAtt << " but got: " << pl.get() << endl;
+	if(strcmp(pl->get(), expectedAtt)) {
+		cout << "attachAbort(" << amName << ',' << teName << "): expected after attach: " << expectedAtt << " but got: " << pl->get() << endl;
 	}	
-	pl.set("3");
+	pl->set("3");
 	node->write(tr);
 	tr.abort(trEnd);
-	if(strcmp(pl.get(), expectedAb)) {
-		cout << "attachAbort(" << amName << ',' << teName << "): expected after abort: " << expectedAb << " but got: " << pl.get() << endl;
+	if(strcmp(pl->get(), expectedAb)) {
+		cout << "attachAbort(" << amName << ',' << teName << "): expected after abort: " << expectedAb << " but got: " << pl->get() << endl;
 	}	
 }
 
@@ -514,20 +524,20 @@ void testPayloadManagement() {
 		// now test per-GraphElem abort behaviour
 		Transaction tr = db->beginTrans(TT::RW);
 		shared_ptr<GraphElem> node = GEFactory::create(db, ClassicStringPayload::id());
-		ClassicStringPayload& pl = dynamic_cast<ClassicStringPayload&>(node->pl());
-		pl.set("1");
+		ClassicStringPayload *pl = dynamic_cast<ClassicStringPayload*>(node->pl());
+		pl->set("1");
 		node->write(tr);
 		tr.commit();
-		pl.set("2");
+		pl->set("2");
 		tr = db->beginTrans(TT::RW);
 		node->attach(tr, AM::KEEP_PL);
 		node->revertOnAbort();
-		pl.set("3");
+		pl->set("3");
 		node->write(tr);
 		tr.abort(TE::AB_KEEP_PL);
 		// should be reverted
-		if(strcmp(pl.get(), "2")) {
-			cout << "testPayloadManagement (with attach AM::KEEP_PL and abort TE::AB_KEEP_PL but individual revert on node): expected after abort: 2 but got: " << pl.get() << endl;
+		if(strcmp(pl->get(), "2")) {
+			cout << "testPayloadManagement (with attach AM::KEEP_PL and abort TE::AB_KEEP_PL but individual revert on node): expected after abort: 2 but got: " << pl->get() << endl;
 		}	
 	}
 	catch(exception &e) {
@@ -579,6 +589,62 @@ void testMoreReadonly() {
 	}
 }
 	
+void testEdgeUpdate() {
+	try {
+		// first create the node and edges we need
+		shared_ptr<GraphElem> node, edge;
+		shared_ptr<Database> db = Database::newInstance(1, 1, "debug2");
+		db->open(mainFileName);
+		Transaction tr = db->beginTrans(TT::RW);
+		// create a node
+		node = GEFactory::create(db, payloadType(PT_EMPTY_NODE));
+		db->write(node, tr);
+		// int:2016 directed from root to node
+		edge = GEFactory::create(db, IntPayload::id());
+        IntPayload *pl = dynamic_cast<IntPayload*>(edge->pl());
+        pl->set(2015);
+		edge->setEndRootStart(node);
+		db->write(edge, tr);
+		tr.commit();
+		tr = db->beginTrans(TT::RW);
+		// find this edge
+		IntPayloadFilter ipf(2015);
+		QueryResult result;
+		db->getRootEdges(result, EdgeEndType::Out, ipf, tr);
+		int cnt;
+		if((cnt = result.size()) != 1) {
+			cout << "testEdgeUpdate 1: wrong number of directed edges filtered by content: " << cnt << endl;
+		}
+		edge = *(result.begin());
+		result.clear();
+		// check the payload
+        pl = dynamic_cast<IntPayload*>(edge->pl());
+		if(pl->get() != 2015) {
+			cout << "testEdgeUpdate 2: failed to read 2015 from edge." << endl;
+		}
+		pl->set(2016);
+		edge->write(tr);	
+		tr.commit();
+		tr = db->beginTrans(TT::RO);
+		// find this edge again
+		ipf.set(2016);
+		db->getRootEdges(result, EdgeEndType::Out, ipf, tr);
+		if((cnt = result.size()) != 1) {
+			cout << "testEdgeUpdate 3: wrong number of directed edges filtered by content: " << cnt << endl;
+		}
+		edge = *(result.begin());
+		// check the payload again
+        pl = dynamic_cast<IntPayload*>(edge->pl());
+		if(pl->get() != 2016) {
+			cout << "testEdgeUpdate 4: failed to read 2016 from edge." << endl;
+		}
+		tr.commit();
+	}
+	catch(exception &e) {
+		cout << "testEdgeUpdate: " << e.what() << endl;
+	}
+}
+
 int main(int argc, char** argv) {
 #if USE_NVWA == 1
     nvwa::new_progname = argv[0];
@@ -601,6 +667,7 @@ int main(int argc, char** argv) {
 	testGetEdges();
 	testPayloadManagement();
 	testMoreReadonly();
+	testEdgeUpdate();
 	// cout << "After hash insert - insert: " << UpsCounter::getInsert() << "  erase: " << UpsCounter::getErase() << "  find: " << UpsCounter::getFind() << endl;
     return 0;
 }

@@ -4,10 +4,6 @@ COPYRIGHT COMES HERE
 
 #include"udbgraph.h"
 
-#ifdef DEBUG
-#include<iostream>
-#endif
-
 #if USE_NVWA == 1
 #include"debug_new.h"
 #endif
@@ -763,7 +759,7 @@ GraphElem::GraphElem(shared_ptr<Database> &d, RecordType rt, unique_ptr<Payload>
     d->exportAutoIndex(chainNew);
 }
 
-Payload& GraphElem::pl() {
+Payload *GraphElem::pl() {
     switch(state) {
     case GEState::CN:
     case GEState::NN:
@@ -778,7 +774,7 @@ Payload& GraphElem::pl() {
     if(!payload) { // defined bool conversion
         throw DebugException("No payload in GraphElem.");
     }
-    return *payload;
+    return payload.get();
 }
 
 void GraphElem::setEnds(shared_ptr<GraphElem> &start, shared_ptr<GraphElem> &end) {

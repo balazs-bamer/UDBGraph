@@ -22,6 +22,10 @@ COPYRIGHT COMES HERE
 #include"exception.h"
 #include"udbgraph_config.h"
 
+#ifdef DEBUG
+#include<iostream>
+#endif
+
 namespace udbgraph {
 
     /** Handle type for transaction handles inside the library. */
@@ -541,7 +545,7 @@ namespace udbgraph {
         /** Saves all user field content into chainNew. Important to write subclasses
          * such that they append to the content written by the superclass.
         Here does nothing. */
-        virtual void serialize(Converter &conv) {}
+        virtual void serialize(Converter &conv) const {}
 
         /** Loads chainNew content, here does nothing. */
         virtual void deserialize(Converter &conv) {}
@@ -551,7 +555,7 @@ namespace udbgraph {
         virtual ~Payload() {}
 
         /** Returns the payload type. */
-        payloadType getType() { return _type; }
+        payloadType getType() const { return _type; }
 
         friend class GraphElem;
     };
@@ -571,10 +575,9 @@ namespace udbgraph {
          * and the filter contents match the payload contents. This base implementation
         always returns true. The implementations in subclasses will have to cast
         pl to the intended payload type to be able to perform the filtering.
-        If the cast fails, std::bad_cast exception will be thrown.
-        If elems with different payload types are to be expected, this bad_cast
-        should be caught inside match and false returned. */
-        virtual bool match(Payload &pl) noexcept { return true; }
+        If the cast fails, false must be returned, because different payload types
+        may arrive. */
+        virtual bool match(const Payload * const pl) const noexcept { return true; }
 
         /** Returns the static member of the same type matching everyting. */
         static Filter& allpass() { return defaultFilter; }
@@ -595,7 +598,7 @@ namespace udbgraph {
 
         /** Checks if the given payload matches the stored type. It returns true
         if the stored type in this is PT_ANY. */
-        virtual bool match(Payload &pl) noexcept { return type == PT_ANY || pl.getType() == type; }
+        virtual bool match(const Payload * const pl) const noexcept { return type == PT_ANY || pl->getType() == type; }
 
         /** Looks up pt in store. If found, returns a reference to the instance.
          * If not found, inserts it and returns the new reference. This is a convenience
@@ -687,11 +690,11 @@ namespace udbgraph {
         /** Sets the willRevertOnAbort flag. */
         void revertOnAbort() { willRevertOnAbort = true; }
 
-        /** Returns a reference to the payload. It is forbidden to define operator=
-         * in a Payload subclass and overwrite the returned reference value!
-        The return value should be casted and saved into a reference of the contained
-        type and accessed there. */
-        Payload& pl();
+        /** Returns the native pointer to the payload. It is forbidden to define
+         * operator= in a Payload subclass and overwrite the pointed value!
+         * It is also forbidden to free this pointer. The return value should be
+         * casted and saved into a pointer of the contained type and accessed there. */
+        Payload* pl();
 
         /** Convenience wrapper for elems registered in Database or with known key.
         See Database::write. */

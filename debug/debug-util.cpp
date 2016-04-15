@@ -22,10 +22,10 @@ payloadType ClassicStringPayload::_staticType;
 
 void ClassicStringPayload::set(const char * const newContent) {
 	int len = strlen(newContent);
-	if(maxLen <= len) {
+	if(maxLen < len) {
 		delete[] content;
-		maxLen = len + 1;
-		content = new char[maxLen];
+		maxLen = len;
+		content = new char[maxLen + 1];
 	}
 	strcpy(content, newContent);
 }
@@ -56,15 +56,14 @@ void ClassicStringPayload::fill(size_t len) {
 
 payloadType IntPayload::_staticType;
 
-bool IntPayloadFilter::match(udbgraph::Payload &pl) noexcept {
+bool IntPayloadFilter::match(const udbgraph::Payload * const pl) const noexcept {
 	// do not throw std::bad_cast on failure because that payload belongs
 	// to an other graph elem
-	try {
-		return dynamic_cast<IntPayload&>(pl).get() == value;
-	}
-	catch(bad_cast &e) {
+	const IntPayload * const ipl = dynamic_cast<const IntPayload* const>(pl);
+	if(ipl == nullptr) {
 		return false;
 	}
+	return ipl->get() == value;
 }
 
 
